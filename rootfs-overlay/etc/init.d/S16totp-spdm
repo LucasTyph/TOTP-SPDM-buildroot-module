@@ -6,10 +6,10 @@
 case "$1" in
  start)
 	echo "Starting watchdog..."
-	modprobe hello
+	modprobe interrupt_test
 	;;
   stop)
-  	modprobe -r hello
+  	modprobe -r interrupt_test
 	;;
   restart|reload)
 	;;
