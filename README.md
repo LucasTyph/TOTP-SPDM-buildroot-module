@@ -1,5 +1,5 @@
 # TOTP-SPDM-buildroot-base
-Buldroot module for TOTP + SPDM integration
+Buildroot module for TOTP + SPDM integration
 
 requires setting the following variables on Buildroot:
 - `BR2_EXTERNAL`  to this directory (e.g. `BR2_EXTERNAL=/home/user/this_repo/`)
