@@ -1,4 +1,4 @@
-# TOTP-SPDM-buildroot-base
+# TOTP-SPDM-buildroot-module (WIP)
 Buildroot module for TOTP + SPDM integration
 
 requires setting the following variables on Buildroot:
