@@ -1,15 +1,15 @@
 #!/bin/sh
 #
-# Start watchdog
+# Start driver at boot
 #
 
 case "$1" in
- start)
+  start)
 	echo "Starting watchdog..."
-	modprobe interrupt_test
+	modprobe totp_spdm_driver
 	;;
   stop)
-  	modprobe -r interrupt_test
+  	modprobe -r totp_spdm_driver
 	;;
   restart|reload)
 	;;
