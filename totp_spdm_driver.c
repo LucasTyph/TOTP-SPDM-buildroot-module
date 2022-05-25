@@ -4,6 +4,7 @@
 #include <linux/usb.h>
 #include <linux/hrtimer.h>
 #include <linux/sched.h>
+#include <linux/mutex.h>
 
 /*
 ** This macro is used to tell the driver to use old method or new method.
@@ -42,12 +43,75 @@ static void print_usb_endpoint_descriptor (const struct usb_endpoint_descriptor 
 	pr_info("\n");
 }
 
+struct totp_spdm_usb {
+	struct urb *out_urb;
+	struct urb *in_urb;
+	uint8_t port_number;
+	struct usb_device *dev;
+	uint8_t *buf;
+	unsigned long buf_size;
+	void *private;
+} *totp_spdm_usb;
+
+/* get and set the serial private data pointer helper functions */
+static inline void *usb_get_usb_data(struct totp_spdm_usb *usb)
+{
+	return usb->private;
+}
+
+static inline void usb_set_serial_data(struct totp_spdm_usb *usb, void *data)
+{
+	usb->private = data;
+}
+
+static void set_buffer(struct totp_spdm_usb *s){
+	s->buf_size = 512;
+	uint8_t data[512] = {[0] = 5, [1] = 0x11, [2] = 0xe1, [9] = 0xc6, [10] = 0xf7};
+	//05 11 e1 00 00 00 00 00 00 c6 f7 00 00
+	s->buf = data;
+}
+
+static void urb_out_callback(struct urb *urb){
+	printk(KERN_INFO "urb_out_callback\n");
+}
+
+static void send_data(void){
+	int response;
+
+	// transfer buffer
+	set_buffer(totp_spdm_usb);
+	
+	// allocate URB
+	totp_spdm_usb->out_urb = usb_alloc_urb(0, GFP_KERNEL);
+	usb_fill_bulk_urb(
+		totp_spdm_usb->out_urb,
+		totp_spdm_usb->dev,
+		usb_sndctrlpipe(
+			totp_spdm_usb->dev,
+			0),
+		totp_spdm_usb->buf,
+		totp_spdm_usb->buf_size,
+		urb_out_callback,
+		totp_spdm_usb
+	);
+	
+	// submit urb
+	response = usb_submit_urb(totp_spdm_usb->out_urb, GFP_KERNEL);
+	if (response) {
+		printk(KERN_INFO "erro em usb_submit_urb\n");
+	}
+	
+	// free urb
+	usb_free_urb(totp_spdm_usb->out_urb);
+}
+
 static struct hrtimer htimer;
 static ktime_t kt_period;
 
 static enum hrtimer_restart timer_function(struct hrtimer *timer)
 {
-	// @Do your work here.
+	send_data();
+	
 	printk(KERN_INFO "timer_function\n");
 
 	hrtimer_forward_now(timer, kt_period);
@@ -90,6 +154,9 @@ static int etx_usb_probe (struct usb_interface *interface, const struct usb_devi
 		print_usb_endpoint_descriptor(iface_desc->endpoint[i].desc);
 	}
 	
+	totp_spdm_usb->dev = usb_get_dev(interface_to_usbdev(interface));
+	timer_init();
+	
 	printk(KERN_INFO "Initializing timer-based function\n");
 	
 	return 0;  //return 0 indicates we are managing this device
@@ -129,7 +196,6 @@ module_usb_driver(etx_usb_driver);
 #else
 static int __init etx_usb_init (void) {
 	printk(KERN_INFO "etx_usb_init\n");
-	timer_init();
 	//register the USB device
 	return usb_register(&etx_usb_driver);
 }
