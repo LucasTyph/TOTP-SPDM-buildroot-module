@@ -72,7 +72,7 @@ static inline void usb_set_serial_data(struct totp_spdm_usb *usb, void *data)
 {
 	usb->private = data;
 }
-/*
+
 static void set_buffer(struct totp_spdm_usb *s){
 	s->buf_size = 512;
 	uint8_t data[512] = {[0] = 5, [1] = 0x11, [2] = 0xe1, [9] = 0xc6, [10] = 0xf7};
@@ -88,32 +88,33 @@ static void send_data(void){
 	int response;
 
 	// transfer buffer
-	set_buffer(totp_spdm_usb);
+	set_buffer(totp_spdm_usb_struct);
 	
 	// allocate URB
-	totp_spdm_usb->out_urb = usb_alloc_urb(0, GFP_KERNEL);
+	totp_spdm_usb_struct->out_urb = usb_alloc_urb(0, GFP_KERNEL);
+	pr_info("urb allocated\n");
 	usb_fill_bulk_urb(
-		totp_spdm_usb->out_urb,
-		totp_spdm_usb->dev,
+		totp_spdm_usb_struct->out_urb,
+		totp_spdm_usb_struct->dev,
 		usb_sndctrlpipe(
-			totp_spdm_usb->dev,
+			totp_spdm_usb_struct->dev,
 			0),
-		totp_spdm_usb->buf,
-		totp_spdm_usb->buf_size,
+		totp_spdm_usb_struct->buf,
+		totp_spdm_usb_struct->buf_size,
 		urb_out_callback,
-		totp_spdm_usb
+		totp_spdm_usb_struct
 	);
+	pr_info("urb filled\n");
 	
 	// submit urb
-	response = usb_submit_urb(totp_spdm_usb->out_urb, GFP_KERNEL);
+	response = usb_submit_urb(totp_spdm_usb_struct->out_urb, GFP_KERNEL);
 	if (response) {
 		printk(KERN_INFO "erro em usb_submit_urb\n");
 	}
 	
 	// free urb
-	usb_free_urb(totp_spdm_usb->out_urb);
+	usb_free_urb(totp_spdm_usb_struct->out_urb);
 }
-*/
 
 static void totp_spdm_work_handler(struct work_struct *w) {
 	int tries;
@@ -140,6 +141,7 @@ static void totp_spdm_work_handler(struct work_struct *w) {
 
 	while(true){
 		pr_info("work handler\nid: %d\n", totp_spdm_usb_struct->id);
+		send_data();
 		msleep(MS_VERIFICATION_PERIOD);
 	}
 }
@@ -149,6 +151,8 @@ static void totp_spdm_work_handler(struct work_struct *w) {
 */
 static int usb_totp_spdm_probe (struct usb_interface *interface, const struct usb_device_id *id) {
 	printk(KERN_INFO "usb_totp_spdm_probe\n");
+	totp_spdm_usb_struct->dev = interface_to_usbdev(interface);
+
 	unsigned int i;
 	struct usb_host_interface *iface_desc = interface->cur_altsetting;
  
