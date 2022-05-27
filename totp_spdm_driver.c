@@ -2,11 +2,10 @@
 #include <linux/interrupt.h>
 #include <linux/module.h>
 #include <linux/usb.h>
-// #include <linux/sched.h>
 #include <linux/mutex.h>
 #include <linux/workqueue.h>
-#include <linux/jiffies.h>
 #include <linux/delay.h>
+#include <linux/reboot.h>
 
 /*
 ** This macro is used to tell the driver to use old method or new method.
@@ -16,11 +15,13 @@
 #define IS_NEW_METHOD_USED (1)
 #define USB_VENDOR_ID (0x0666)
 #define USB_PRODUCT_ID (0x0666)
-#define MS_PERIOD (10000)
+#define MAX_TRIES (2)
+#define TIMEOUT_MS (5000)
+#define MS_VERIFICATION_PERIOD (10000)
 
 static void totp_spdm_work_handler(struct work_struct *w);
 static struct workqueue_struct *wq = 0;
-static DECLARE_DELAYED_WORK(totp_spdm_work, totp_spdm_work_handler);
+static DECLARE_WORK(totp_spdm_work, totp_spdm_work_handler);
 
 static void print_usb_interface_descriptor (const struct usb_interface_descriptor i) {
 	pr_info("USB_INTERFACE_DESCRIPTOR:\n");
@@ -51,6 +52,7 @@ static void print_usb_endpoint_descriptor (const struct usb_endpoint_descriptor 
 
 struct totp_spdm_usb {
 	u8 id;
+	unsigned int endpoints_count;
 	struct urb *out_urb;
 	struct urb *in_urb;
 	uint8_t port_number;
@@ -58,7 +60,7 @@ struct totp_spdm_usb {
 	uint8_t *buf;
 	unsigned long buf_size;
 	void *private;
-} *usb_struct;
+} *totp_spdm_usb_struct;
 
 /* get and set the serial private data pointer helper functions */
 static inline void *usb_get_usb_data(struct totp_spdm_usb *usb)
@@ -112,10 +114,33 @@ static void send_data(void){
 	usb_free_urb(totp_spdm_usb->out_urb);
 }
 */
+
 static void totp_spdm_work_handler(struct work_struct *w) {
+	int tries;
+	bool device_found = false;
+
+	// Maybe in some world it takes longer for the device to be found
+	// For this case, a timeout with a set number of tries
+	for (tries = 0; tries < MAX_TRIES; tries++){
+		if (totp_spdm_usb_struct->endpoints_count != 0){
+			pr_info("SPDM device found on attempt %d\n", tries);
+			device_found = true;
+			break;
+			msleep(TIMEOUT_MS);
+		}
+	}
+
+	if (!device_found){
+		// shutdown device
+		pr_alert("SPDM device not found!\n");
+		pr_alert("Shutting down system...\n");
+		// uncommment for shutting down the system
+		// kernel_power_off();
+	}
+
 	while(true){
-		pr_info("work handler\nid: %d\n", usb_struct->id);
-		msleep(MS_PERIOD);
+		pr_info("work handler\nid: %d\n", totp_spdm_usb_struct->id);
+		msleep(MS_VERIFICATION_PERIOD);
 	}
 }
 
@@ -125,17 +150,16 @@ static void totp_spdm_work_handler(struct work_struct *w) {
 static int usb_totp_spdm_probe (struct usb_interface *interface, const struct usb_device_id *id) {
 	printk(KERN_INFO "usb_totp_spdm_probe\n");
 	unsigned int i;
-	unsigned int endpoints_count;
 	struct usb_host_interface *iface_desc = interface->cur_altsetting;
  
 	dev_info(&interface->dev, "USB Driver Probed: Vendor ID : 0x%02x,\t"
 		"Product ID : 0x%02x\n", id->idVendor, id->idProduct);
              
-	endpoints_count = iface_desc->desc.bNumEndpoints;
+	totp_spdm_usb_struct->endpoints_count = iface_desc->desc.bNumEndpoints;
 
 	print_usb_interface_descriptor(iface_desc->desc);
 
-	for (i = 0; i < endpoints_count; i++) {
+	for (i = 0; i < totp_spdm_usb_struct->endpoints_count; i++) {
 		print_usb_endpoint_descriptor(iface_desc->endpoint[i].desc);
 	}
 	
@@ -174,14 +198,21 @@ module_usb_driver(usb_totp_spdm_driver);
 #else
 static int __init usb_totp_spdm_init (void) {
 	printk(KERN_INFO "usb_totp_spdm_init\n");
-	usb_struct = vmalloc(sizeof(struct totp_spdm_usb));
-	usb_struct->id = 1;
+
+	// create an instance of the driver's struct
+	totp_spdm_usb_struct = vmalloc(sizeof(struct totp_spdm_usb));
+	totp_spdm_usb_struct->endpoints_count = 0;
+	totp_spdm_usb_struct->id = 1;
+
+	// start the workqueue pointer, in case it is not set yet
 	if (!wq){
 		wq = create_singlethread_workqueue("totp_spdm");
 		printk(KERN_INFO "not wq\n");
 	}
+
+	// create workqueue
 	if (wq){
-		queue_delayed_work(wq, &totp_spdm_work, 40*HZ); // HZ = 1 sec in jiffies
+		queue_work(wq, &totp_spdm_work);
 		printk(KERN_INFO "wq\n");
 	}
 	//register the USB device
@@ -190,6 +221,11 @@ static int __init usb_totp_spdm_init (void) {
  
 static void __exit usb_totp_spdm_exit (void) {
 	printk(KERN_INFO "usb_totp_spdm_exit\n");
+
+	// stop work queue
+	cancel_work_sync(&totp_spdm_work);
+	destroy_workqueue(wq);
+
 	//deregister the USB device
 	usb_deregister(&usb_totp_spdm_driver);
 }
