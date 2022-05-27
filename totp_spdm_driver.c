@@ -19,8 +19,13 @@
 #define TIMEOUT_MS (5000)
 #define MS_VERIFICATION_PERIOD (10000)
 
+// Work queue handling function definition
 static void totp_spdm_work_handler(struct work_struct *w);
+
+// Pointer necessary to work queues
 static struct workqueue_struct *wq = 0;
+
+// Definition of the handler attached to totp_spdm_work work queue
 static DECLARE_WORK(totp_spdm_work, totp_spdm_work_handler);
 
 static void print_usb_interface_descriptor (const struct usb_interface_descriptor i) {
@@ -50,6 +55,7 @@ static void print_usb_endpoint_descriptor (const struct usb_endpoint_descriptor 
 	pr_info("\n");
 }
 
+// Main class struct
 struct totp_spdm_usb {
 	u8 id;
 	unsigned int endpoints_count;
@@ -73,6 +79,9 @@ static inline void usb_set_serial_data(struct totp_spdm_usb *usb, void *data)
 	usb->private = data;
 }
 
+/*
+* Temporary function to set buffer and buffer size
+*/
 static void set_buffer(struct totp_spdm_usb *s){
 	s->buf_size = 512;
 	uint8_t data[512] = {[0] = 5, [1] = 0x11, [2] = 0xe1, [9] = 0xc6, [10] = 0xf7};
@@ -80,10 +89,17 @@ static void set_buffer(struct totp_spdm_usb *s){
 	s->buf = data;
 }
 
+/*
+* URB callback function.
+* Will be called every time an RUB request finishes
+*/
 static void urb_out_callback(struct urb *urb){
 	printk(KERN_INFO "urb_out_callback\n");
 }
 
+/*
+* Main function to send data through and URB to relevant USB device
+*/
 static void send_data(void){
 	int response;
 
@@ -92,19 +108,19 @@ static void send_data(void){
 	
 	// allocate URB
 	totp_spdm_usb_struct->out_urb = usb_alloc_urb(0, GFP_KERNEL);
-	pr_info("urb allocated\n");
+
+	// fill URB with necessary info
 	usb_fill_bulk_urb(
-		totp_spdm_usb_struct->out_urb,
-		totp_spdm_usb_struct->dev,
+		totp_spdm_usb_struct->out_urb,		// URB pointer
+		totp_spdm_usb_struct->dev,			// relevant usb_device
 		usb_sndctrlpipe(
 			totp_spdm_usb_struct->dev,
-			0),
-		totp_spdm_usb_struct->buf,
-		totp_spdm_usb_struct->buf_size,
-		urb_out_callback,
-		totp_spdm_usb_struct
+			0),								// control pipe
+		totp_spdm_usb_struct->buf,			// buffer
+		totp_spdm_usb_struct->buf_size,		// buffer size
+		urb_out_callback,					// callback funciton
+		totp_spdm_usb_struct				// context (?)
 	);
-	pr_info("urb filled\n");
 	
 	// submit urb
 	response = usb_submit_urb(totp_spdm_usb_struct->out_urb, GFP_KERNEL);
@@ -116,6 +132,9 @@ static void send_data(void){
 	usb_free_urb(totp_spdm_usb_struct->out_urb);
 }
 
+/*
+* Work queue function called continuously
+*/
 static void totp_spdm_work_handler(struct work_struct *w) {
 	int tries;
 	bool device_found = false;
@@ -153,16 +172,16 @@ static int usb_totp_spdm_probe (struct usb_interface *interface, const struct us
 	printk(KERN_INFO "usb_totp_spdm_probe\n");
 	totp_spdm_usb_struct->dev = interface_to_usbdev(interface);
 
+	// Endpoint-related kernel prints
 	unsigned int i;
 	struct usb_host_interface *iface_desc = interface->cur_altsetting;
- 
 	dev_info(&interface->dev, "USB Driver Probed: Vendor ID : 0x%02x,\t"
 		"Product ID : 0x%02x\n", id->idVendor, id->idProduct);
-             
+
+	// We set this bariable to make sure at least one device has been found 
 	totp_spdm_usb_struct->endpoints_count = iface_desc->desc.bNumEndpoints;
 
 	print_usb_interface_descriptor(iface_desc->desc);
-
 	for (i = 0; i < totp_spdm_usb_struct->endpoints_count; i++) {
 		print_usb_endpoint_descriptor(iface_desc->endpoint[i].desc);
 	}
@@ -214,7 +233,7 @@ static int __init usb_totp_spdm_init (void) {
 		printk(KERN_INFO "not wq\n");
 	}
 
-	// create workqueue
+	// create totp_spdm_work workqueue
 	if (wq){
 		queue_work(wq, &totp_spdm_work);
 		printk(KERN_INFO "wq\n");
@@ -226,7 +245,7 @@ static int __init usb_totp_spdm_init (void) {
 static void __exit usb_totp_spdm_exit (void) {
 	printk(KERN_INFO "usb_totp_spdm_exit\n");
 
-	// stop work queue
+	// stop totp_spdm_work work queue
 	cancel_work_sync(&totp_spdm_work);
 	destroy_workqueue(wq);
 
