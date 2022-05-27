@@ -2,9 +2,11 @@
 #include <linux/interrupt.h>
 #include <linux/module.h>
 #include <linux/usb.h>
-#include <linux/hrtimer.h>
-#include <linux/sched.h>
+// #include <linux/sched.h>
 #include <linux/mutex.h>
+#include <linux/workqueue.h>
+#include <linux/jiffies.h>
+#include <linux/delay.h>
 
 /*
 ** This macro is used to tell the driver to use old method or new method.
@@ -14,7 +16,11 @@
 #define IS_NEW_METHOD_USED (1)
 #define USB_VENDOR_ID (0x0666)
 #define USB_PRODUCT_ID (0x0666)
-#define IRQ_NO 11
+#define MS_PERIOD (10000)
+
+static void totp_spdm_work_handler(struct work_struct *w);
+static struct workqueue_struct *wq = 0;
+static DECLARE_DELAYED_WORK(totp_spdm_work, totp_spdm_work_handler);
 
 static void print_usb_interface_descriptor (const struct usb_interface_descriptor i) {
 	pr_info("USB_INTERFACE_DESCRIPTOR:\n");
@@ -44,6 +50,7 @@ static void print_usb_endpoint_descriptor (const struct usb_endpoint_descriptor 
 }
 
 struct totp_spdm_usb {
+	u8 id;
 	struct urb *out_urb;
 	struct urb *in_urb;
 	uint8_t port_number;
@@ -51,7 +58,7 @@ struct totp_spdm_usb {
 	uint8_t *buf;
 	unsigned long buf_size;
 	void *private;
-} *totp_spdm_usb;
+} *usb_struct;
 
 /* get and set the serial private data pointer helper functions */
 static inline void *usb_get_usb_data(struct totp_spdm_usb *usb)
@@ -63,7 +70,7 @@ static inline void usb_set_serial_data(struct totp_spdm_usb *usb, void *data)
 {
 	usb->private = data;
 }
-
+/*
 static void set_buffer(struct totp_spdm_usb *s){
 	s->buf_size = 512;
 	uint8_t data[512] = {[0] = 5, [1] = 0x11, [2] = 0xe1, [9] = 0xc6, [10] = 0xf7};
@@ -104,41 +111,19 @@ static void send_data(void){
 	// free urb
 	usb_free_urb(totp_spdm_usb->out_urb);
 }
-
-static struct hrtimer htimer;
-static ktime_t kt_period;
-
-static enum hrtimer_restart timer_function(struct hrtimer *timer)
-{
-	send_data();
-	
-	printk(KERN_INFO "timer_function\n");
-
-	hrtimer_forward_now(timer, kt_period);
-	return HRTIMER_RESTART;
-}
-
-static void timer_init(void) {
-	kt_period = ktime_set(10, 0); // seconds, nanoseconds
-	hrtimer_init(&htimer, CLOCK_REALTIME, HRTIMER_MODE_REL);
-	htimer.function = timer_function;
-	hrtimer_start(&htimer, kt_period, HRTIMER_MODE_REL);
-}
-
-static void timer_cleanup(void) {
-	hrtimer_cancel(&htimer);
-}
-
-static irqreturn_t sample_irq(int irq, void *dev_id){
-	printk("irq %d\n", irq);
-	return IRQ_RETVAL(1);
+*/
+static void totp_spdm_work_handler(struct work_struct *w) {
+	while(true){
+		pr_info("work handler\nid: %d\n", usb_struct->id);
+		msleep(MS_PERIOD);
+	}
 }
 
 /*
 ** This function will be called when USB device is inserted.
 */
-static int etx_usb_probe (struct usb_interface *interface, const struct usb_device_id *id) {
-	printk(KERN_INFO "etx_usb_probe\n");
+static int usb_totp_spdm_probe (struct usb_interface *interface, const struct usb_device_id *id) {
+	printk(KERN_INFO "usb_totp_spdm_probe\n");
 	unsigned int i;
 	unsigned int endpoints_count;
 	struct usb_host_interface *iface_desc = interface->cur_altsetting;
@@ -154,60 +139,63 @@ static int etx_usb_probe (struct usb_interface *interface, const struct usb_devi
 		print_usb_endpoint_descriptor(iface_desc->endpoint[i].desc);
 	}
 	
-	totp_spdm_usb->dev = usb_get_dev(interface_to_usbdev(interface));
-	timer_init();
-	
-	printk(KERN_INFO "Initializing timer-based function\n");
-	
 	return 0;  //return 0 indicates we are managing this device
 }
 
 /*
 ** This function will be called when USB device is removed.
 */
-static void etx_usb_disconnect (struct usb_interface *interface) {
-	printk (KERN_INFO "etx_usb_disconnect\n");
-	free_irq (IRQ_NO,(void *)(sample_irq));
-	timer_cleanup();
+static void usb_totp_spdm_disconnect (struct usb_interface *interface) {
+	printk (KERN_INFO "usb_totp_spdm_disconnect\n");
 	dev_info (&interface->dev, "USB Driver Disconnected\n");
 }
  
 //usb_device_id provides a list of different types of USB devices that the driver supports
-const struct usb_device_id etx_usb_table[] = {
+const struct usb_device_id usb_totp_spdm_table[] = {
 	{USB_DEVICE (USB_VENDOR_ID, USB_PRODUCT_ID)},
 	{} /* Terminating entry */
 };
  
 //This enable the linux hotplug system to load the driver automatically when the device is plugged in
-MODULE_DEVICE_TABLE(usb, etx_usb_table);
+MODULE_DEVICE_TABLE(usb, usb_totp_spdm_table);
 
 //The structure needs to do is register with the linux subsystem
-static struct usb_driver etx_usb_driver = {
+static struct usb_driver usb_totp_spdm_driver = {
 	.name       = "TOTP + SPDM USB Driver",
-	.probe      = etx_usb_probe,
-	.disconnect = etx_usb_disconnect,
-	.id_table   = etx_usb_table,
+	.probe      = usb_totp_spdm_probe,
+	.disconnect = usb_totp_spdm_disconnect,
+	.id_table   = usb_totp_spdm_table,
 };
 
 #if (IS_NEW_METHOD_USED == 0)
 //This will replace module_init and module_exit.
-module_usb_driver(etx_usb_driver);
+module_usb_driver(usb_totp_spdm_driver);
  
 #else
-static int __init etx_usb_init (void) {
-	printk(KERN_INFO "etx_usb_init\n");
+static int __init usb_totp_spdm_init (void) {
+	printk(KERN_INFO "usb_totp_spdm_init\n");
+	usb_struct = vmalloc(sizeof(struct totp_spdm_usb));
+	usb_struct->id = 1;
+	if (!wq){
+		wq = create_singlethread_workqueue("totp_spdm");
+		printk(KERN_INFO "not wq\n");
+	}
+	if (wq){
+		queue_delayed_work(wq, &totp_spdm_work, 40*HZ); // HZ = 1 sec in jiffies
+		printk(KERN_INFO "wq\n");
+	}
 	//register the USB device
-	return usb_register(&etx_usb_driver);
+	return usb_register(&usb_totp_spdm_driver);
 }
  
-static void __exit etx_usb_exit (void) {
-	printk(KERN_INFO "etx_usb_exit\n");
+static void __exit usb_totp_spdm_exit (void) {
+	printk(KERN_INFO "usb_totp_spdm_exit\n");
 	//deregister the USB device
-	usb_deregister(&etx_usb_driver);
+	usb_deregister(&usb_totp_spdm_driver);
 }
  
-module_init(etx_usb_init);
-module_exit(etx_usb_exit);
+module_init(usb_totp_spdm_init);
+module_exit(usb_totp_spdm_exit);
 #endif
 
 MODULE_LICENSE("GPL");
