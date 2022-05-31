@@ -6,6 +6,7 @@
 #include <linux/workqueue.h>
 #include <linux/delay.h>
 #include <linux/reboot.h>
+#include <linux/slab.h>
 
 /*
 ** This macro is used to tell the driver to use old method or new method.
@@ -105,6 +106,9 @@ static void send_data(void){
 
 	// transfer buffer
 	set_buffer(totp_spdm_usb_struct);
+
+	char *buffer = kmalloc(totp_spdm_usb_struct->buf_size, GFP_DMA); /* required by kernel >= 4.9 */
+	buffer = memcpy(buffer, totp_spdm_usb_struct->buf, totp_spdm_usb_struct->buf_size);
 	
 	// allocate URB
 	totp_spdm_usb_struct->out_urb = usb_alloc_urb(0, GFP_KERNEL);
@@ -113,10 +117,10 @@ static void send_data(void){
 	usb_fill_bulk_urb(
 		totp_spdm_usb_struct->out_urb,		// URB pointer
 		totp_spdm_usb_struct->dev,			// relevant usb_device
-		usb_sndctrlpipe(
+		usb_sndbulkpipe(
 			totp_spdm_usb_struct->dev,
-			0),								// control pipe
-		totp_spdm_usb_struct->buf,			// buffer
+			2),								// control pipe
+		buffer,								// buffer
 		totp_spdm_usb_struct->buf_size,		// buffer size
 		urb_out_callback,					// callback funciton
 		totp_spdm_usb_struct				// context (?)
@@ -125,11 +129,12 @@ static void send_data(void){
 	// submit urb
 	response = usb_submit_urb(totp_spdm_usb_struct->out_urb, GFP_KERNEL);
 	if (response) {
-		printk(KERN_INFO "erro em usb_submit_urb\n");
+		printk(KERN_INFO "erro %d em usb_submit_urb\n", response);
 	}
 	
 	// free urb
 	usb_free_urb(totp_spdm_usb_struct->out_urb);
+	kfree(buffer);
 }
 
 /*
