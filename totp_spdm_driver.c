@@ -13,12 +13,14 @@
 ** If it is 0, then driver will use old method. ie: __init and __exit
 ** If it is non zero, then driver will use new method. ie: module_usb_driver
 */
-#define IS_NEW_METHOD_USED (1)
-#define USB_VENDOR_ID (0x0666)
-#define USB_PRODUCT_ID (0x0666)
-#define MAX_TRIES (2)
-#define TIMEOUT_MS (5000)
-#define MS_VERIFICATION_PERIOD (10000)
+#define IS_NEW_METHOD_USED 1
+#define USB_VENDOR_ID 0x0666
+#define USB_PRODUCT_ID 0x0666
+#define MAX_TRIES 2
+#define TIMEOUT_MS 5000
+#define MS_VERIFICATION_PERIOD 10000
+#define BUFFER_SIZE 64
+#define URB_REQUEST_OFFSET 8
 
 // Work queue handling function definition
 static void totp_spdm_work_handler(struct work_struct *w);
@@ -83,16 +85,28 @@ static inline void usb_set_serial_data(struct totp_spdm_usb *usb, void *data)
 /*
 * Temporary function to set buffer and buffer size
 */
-static void set_buffer(struct totp_spdm_usb *s){
-	s->buf_size = 512;
-	uint8_t data[512] = {[0] = 5, [1] = 0x11, [2] = 0xe1, [9] = 0xc6, [10] = 0xf7};
+static void set_buffer(void){
+	totp_spdm_usb_struct->buf_size = BUFFER_SIZE;
+	totp_spdm_usb_struct->buf = kmalloc(totp_spdm_usb_struct->buf_size, GFP_DMA);
+	uint8_t data[BUFFER_SIZE] = {[0] = 5, [1] = 0x11, [2] = 0xe1, [9] = 0xc6, [10] = 0xf7};
 	//05 11 e1 00 00 00 00 00 00 c6 f7 00 00
-	s->buf = data;
+	memcpy(totp_spdm_usb_struct->buf, data, BUFFER_SIZE);
+
+	pr_info("totp_spdm_usb_struct->buf: \n");
+	int i;
+    for (i = 0; i < (BUFFER_SIZE)/8; i++){
+        pr_info("%02X %02X %02X %02X %02X %02X %02X %02X",
+			totp_spdm_usb_struct->buf[8*i+0], totp_spdm_usb_struct->buf[8*i+1],
+			totp_spdm_usb_struct->buf[8*i+2], totp_spdm_usb_struct->buf[8*i+3], 
+			totp_spdm_usb_struct->buf[8*i+4], totp_spdm_usb_struct->buf[8*i+5],
+			totp_spdm_usb_struct->buf[8*i+6], totp_spdm_usb_struct->buf[8*i+7]);
+    }
+	pr_info("-----\n");
 }
 
 /*
 * URB callback function.
-* Will be called every time an RUB request finishes
+* Will be called every time an URB request finishes
 */
 static void urb_out_callback(struct urb *urb){
 	printk(KERN_INFO "urb_out_callback\n");
@@ -105,11 +119,36 @@ static void send_data(void){
 	int response;
 
 	// transfer buffer
-	set_buffer(totp_spdm_usb_struct);
+	set_buffer();
 
-	char *buffer = kmalloc(totp_spdm_usb_struct->buf_size, GFP_DMA); /* required by kernel >= 4.9 */
-	buffer = memcpy(buffer, totp_spdm_usb_struct->buf, totp_spdm_usb_struct->buf_size);
+	uint8_t *buffer = kmalloc(totp_spdm_usb_struct->buf_size, GFP_KERNEL);\
+
+	/* 
+	* TODO: ideally, remove the URB_REQUEST_OFFSET to avoid losing
+	* 8 bytes from the original message
+	*
+	* This is a bit difficult though. If you simply add the buffer normally,
+	* random bytes appear in these first 8 positions. Up until the execution
+	* reaches the uhci_urb_enqueue function in uhci-q.c, everything's fine,
+	* but that's about as far as I managed to track the URB. Also, to make
+	* matters more interesting, this code only fails when I don't debug the
+	* code via GDB. If I do, reaching this uhci_urb_enqueue function makes
+	* the code magically work, and the output buffer on the device I obtained
+	* through the QEMU emulation is correctly allocated. This can be achieved
+	* by creating a breakpoint at the function usb_hcd_link_urb_to_ep.
+	*/
+	memcpy(&buffer[URB_REQUEST_OFFSET], totp_spdm_usb_struct->buf,
+			totp_spdm_usb_struct->buf_size - URB_REQUEST_OFFSET);
 	
+	pr_info("buffer: \n");
+	int i;
+    for (i = 0; i < (BUFFER_SIZE)/8; i++){
+        pr_info("%02X %02X %02X %02X %02X %02X %02X %02X",
+			buffer[8*i+0], buffer[8*i+1], buffer[8*i+2], buffer[8*i+3], 
+			buffer[8*i+4], buffer[8*i+5], buffer[8*i+6], buffer[8*i+7]);
+    }
+	pr_info("-----\n");
+
 	// allocate URB
 	totp_spdm_usb_struct->out_urb = usb_alloc_urb(0, GFP_KERNEL);
 
