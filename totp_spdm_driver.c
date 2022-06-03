@@ -7,6 +7,7 @@
 #include <linux/delay.h>
 #include <linux/reboot.h>
 #include <linux/slab.h>
+#include <linux/mutex.h>
 
 /*
 ** This macro is used to tell the driver to use old method or new method.
@@ -69,6 +70,7 @@ struct totp_spdm_usb {
 	uint8_t *buf;
 	unsigned long buf_size;
 	void *private;
+	struct mutex io_mutex;
 } *totp_spdm_usb_struct;
 
 /* get and set the serial private data pointer helper functions */
@@ -87,9 +89,9 @@ static inline void usb_set_serial_data(struct totp_spdm_usb *usb, void *data)
 */
 static void set_buffer(void){
 	totp_spdm_usb_struct->buf_size = BUFFER_SIZE;
-	totp_spdm_usb_struct->buf = kmalloc(totp_spdm_usb_struct->buf_size, GFP_DMA);
 	uint8_t data[BUFFER_SIZE] = {[0] = 5, [1] = 0x11, [2] = 0xe1, [9] = 0xc6, [10] = 0xf7};
 	//05 11 e1 00 00 00 00 00 00 c6 f7 00 00
+	totp_spdm_usb_struct->buf = kmalloc(totp_spdm_usb_struct->buf_size, GFP_KERNEL);
 	memcpy(totp_spdm_usb_struct->buf, data, BUFFER_SIZE);
 
 	pr_info("totp_spdm_usb_struct->buf: \n");
@@ -110,6 +112,9 @@ static void set_buffer(void){
 */
 static void urb_out_callback(struct urb *urb){
 	printk(KERN_INFO "urb_out_callback\n");
+	// free urb
+	usb_free_urb(totp_spdm_usb_struct->out_urb);
+	kfree(totp_spdm_usb_struct->buf);
 }
 
 /*
@@ -121,34 +126,6 @@ static void send_data(void){
 	// transfer buffer
 	set_buffer();
 
-	uint8_t *buffer = kmalloc(totp_spdm_usb_struct->buf_size, GFP_KERNEL);\
-
-	/* 
-	* TODO: ideally, remove the URB_REQUEST_OFFSET to avoid losing
-	* 8 bytes from the original message
-	*
-	* This is a bit difficult though. If you simply add the buffer normally,
-	* random bytes appear in these first 8 positions. Up until the execution
-	* reaches the uhci_urb_enqueue function in uhci-q.c, everything's fine,
-	* but that's about as far as I managed to track the URB. Also, to make
-	* matters more interesting, this code only fails when I don't debug the
-	* code via GDB. If I do, reaching this uhci_urb_enqueue function makes
-	* the code magically work, and the output buffer on the device I obtained
-	* through the QEMU emulation is correctly allocated. This can be achieved
-	* by creating a breakpoint at the function usb_hcd_link_urb_to_ep.
-	*/
-	memcpy(&buffer[URB_REQUEST_OFFSET], totp_spdm_usb_struct->buf,
-			totp_spdm_usb_struct->buf_size - URB_REQUEST_OFFSET);
-	
-	pr_info("buffer: \n");
-	int i;
-    for (i = 0; i < (BUFFER_SIZE)/8; i++){
-        pr_info("%02X %02X %02X %02X %02X %02X %02X %02X",
-			buffer[8*i+0], buffer[8*i+1], buffer[8*i+2], buffer[8*i+3], 
-			buffer[8*i+4], buffer[8*i+5], buffer[8*i+6], buffer[8*i+7]);
-    }
-	pr_info("-----\n");
-
 	// allocate URB
 	totp_spdm_usb_struct->out_urb = usb_alloc_urb(0, GFP_KERNEL);
 
@@ -159,21 +136,18 @@ static void send_data(void){
 		usb_sndbulkpipe(
 			totp_spdm_usb_struct->dev,
 			2),								// control pipe
-		buffer,								// buffer
+		totp_spdm_usb_struct->buf,								// buffer
 		totp_spdm_usb_struct->buf_size,		// buffer size
 		urb_out_callback,					// callback funciton
 		totp_spdm_usb_struct				// context (?)
 	);
-	
+
 	// submit urb
 	response = usb_submit_urb(totp_spdm_usb_struct->out_urb, GFP_KERNEL);
 	if (response) {
+		usb_free_urb(totp_spdm_usb_struct->out_urb);
 		printk(KERN_INFO "erro %d em usb_submit_urb\n", response);
 	}
-	
-	// free urb
-	usb_free_urb(totp_spdm_usb_struct->out_urb);
-	kfree(buffer);
 }
 
 /*
