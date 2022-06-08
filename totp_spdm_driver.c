@@ -89,6 +89,63 @@ static inline void usb_set_serial_data(struct totp_spdm_usb *usb, void *data)
 }
 
 /*
+* URB callback function.
+* Will be called every time an incoming URB request finishes
+*/
+static void urb_in_callback(struct urb *urb){
+	if (!urb){
+		pr_info("!urb\n");
+	}
+
+	pr_info("totp_spdm_usb_struct->in_buf: %px\n", totp_spdm_usb_struct->in_buf);
+    for (int i = 0; i < (BUFFER_SIZE)/8; i++){
+        pr_info("%02X %02X %02X %02X %02X %02X %02X %02X",
+			totp_spdm_usb_struct->in_buf[8*i+0], totp_spdm_usb_struct->in_buf[8*i+1],
+			totp_spdm_usb_struct->in_buf[8*i+2], totp_spdm_usb_struct->in_buf[8*i+3], 
+			totp_spdm_usb_struct->in_buf[8*i+4], totp_spdm_usb_struct->in_buf[8*i+5],
+			totp_spdm_usb_struct->in_buf[8*i+6], totp_spdm_usb_struct->in_buf[8*i+7]);
+    }
+	pr_info("-----\n");
+
+	// free URBs
+	usb_free_urb(totp_spdm_usb_struct->out_urb);
+	usb_free_urb(totp_spdm_usb_struct->in_urb);
+	kfree(totp_spdm_usb_struct->in_buf);
+	kfree(totp_spdm_usb_struct->buf);
+}
+
+/*
+* URB callback function.
+* Will be called every time an outgoing URB request finishes.
+* Also sends another URB, which gathers the device's response.
+*/
+static void urb_out_callback(struct urb *urb){
+	// allocate memory in totp_spdm_usb struct's input buffer and URB
+	// these will be used to get the device's response
+	totp_spdm_usb_struct->in_buf = kmalloc(totp_spdm_usb_struct->buf_size, GFP_ATOMIC);
+	totp_spdm_usb_struct->in_urb = usb_alloc_urb(0, GFP_ATOMIC);
+	totp_spdm_usb_struct->in_buf_size = BUFFER_SIZE;
+
+	// fill URB with necessary info
+	usb_fill_bulk_urb(
+		totp_spdm_usb_struct->in_urb,		// URB pointer
+		totp_spdm_usb_struct->dev,			// relevant usb_device
+		usb_rcvbulkpipe(					// receiving control pipe
+			totp_spdm_usb_struct->dev,
+			totp_spdm_usb_struct->in_endpoint_addr & USB_ENDPOINT_NUMBER_MASK),
+		totp_spdm_usb_struct->in_buf,		// buffer
+		totp_spdm_usb_struct->in_buf_size,	// buffer size
+		urb_in_callback,					// callback funciton
+		totp_spdm_usb_struct				// context (?)
+	);
+	int response = usb_submit_urb(totp_spdm_usb_struct->in_urb, GFP_ATOMIC);
+	if (response) {
+		usb_free_urb(totp_spdm_usb_struct->in_urb);
+		printk(KERN_INFO "erro %d em usb_submit_urb\n", response);
+	}
+}
+
+/*
 * Temporary function to set buffer and buffer size
 */
 static void set_buffer(void){
@@ -97,72 +154,6 @@ static void set_buffer(void){
 	//05 11 e1 00 00 00 00 00 00 c6 f7 00 00
 	totp_spdm_usb_struct->buf = kmalloc(totp_spdm_usb_struct->buf_size, GFP_KERNEL);
 	memcpy(totp_spdm_usb_struct->buf, data, BUFFER_SIZE);
-
-	pr_info("totp_spdm_usb_struct->buf: \n");
-    for (int i = 0; i < (BUFFER_SIZE)/8; i++){
-        pr_info("%02X %02X %02X %02X %02X %02X %02X %02X",
-			totp_spdm_usb_struct->buf[8*i+0], totp_spdm_usb_struct->buf[8*i+1],
-			totp_spdm_usb_struct->buf[8*i+2], totp_spdm_usb_struct->buf[8*i+3], 
-			totp_spdm_usb_struct->buf[8*i+4], totp_spdm_usb_struct->buf[8*i+5],
-			totp_spdm_usb_struct->buf[8*i+6], totp_spdm_usb_struct->buf[8*i+7]);
-    }
-	pr_info("-----\n");
-}
-
-/*
-* URB callback function.
-* Will be called every time an URB request finishes
-*/
-static void urb_in_callback(struct urb *urb){
-	printk(KERN_INFO "urb_in_callback\n");
-
-	pr_info("urb->transfer_buffer: \n");
-    for (int i = 0; i < 2; i++){
-        pr_info("%02X %02X %02X %02X %02X %02X %02X %02X",
-			((uint8_t *)urb->transfer_buffer)[8*i+0], ((uint8_t *)urb->transfer_buffer)[8*i+1],
-			((uint8_t *)urb->transfer_buffer)[8*i+2], ((uint8_t *)urb->transfer_buffer)[8*i+3], 
-			((uint8_t *)urb->transfer_buffer)[8*i+4], ((uint8_t *)urb->transfer_buffer)[8*i+5],
-			((uint8_t *)urb->transfer_buffer)[8*i+6], ((uint8_t *)urb->transfer_buffer)[8*i+7]);
-    }
-	pr_info("-----\n");
-
-	// free urb
-	usb_free_urb(urb);
-	// kfree(totp_spdm_usb_struct->in_buf);
-}
-
-/*
-* URB callback function.
-* Will be called every time an URB request finishes
-*/
-static void urb_out_callback(struct urb *urb){
-	printk(KERN_INFO "urb_out_callback\n");
-	
-	// free urb
-	usb_free_urb(urb);
-	kfree(totp_spdm_usb_struct->buf);
-
-	totp_spdm_usb_struct->buf = kmalloc(totp_spdm_usb_struct->buf_size, GFP_ATOMIC);
-	totp_spdm_usb_struct->in_urb = usb_alloc_urb(0, GFP_ATOMIC);
-	totp_spdm_usb_struct->in_buf_size = BUFFER_SIZE;
-
-	usb_fill_bulk_urb(
-		totp_spdm_usb_struct->in_urb,		// URB pointer
-		totp_spdm_usb_struct->dev,			// relevant usb_device
-		usb_rcvbulkpipe(					// control pipe
-			totp_spdm_usb_struct->dev,
-			totp_spdm_usb_struct->in_endpoint_addr & USB_ENDPOINT_NUMBER_MASK),
-		totp_spdm_usb_struct->in_buf,		// buffer
-		totp_spdm_usb_struct->in_buf_size,	// buffer size
-		urb_in_callback,					// callback funciton
-		totp_spdm_usb_struct				// context (?)
-	);
-	totp_spdm_usb_struct->in_urb->transfer_flags = URB_NO_TRANSFER_DMA_MAP;
-	int response = usb_submit_urb(totp_spdm_usb_struct->in_urb, GFP_ATOMIC);
-	if (response) {
-		usb_free_urb(totp_spdm_usb_struct->in_urb);
-		printk(KERN_INFO "erro %d em usb_submit_urb\n", response);
-	}
 }
 
 /*
@@ -225,7 +216,7 @@ static void totp_spdm_work_handler(struct work_struct *w) {
 	}
 
 	while(true){
-		pr_info("work handler\nid: %d\n", totp_spdm_usb_struct->id);
+		pr_info("work handler\n");
 		send_data();
 		msleep(MS_VERIFICATION_PERIOD);
 	}
