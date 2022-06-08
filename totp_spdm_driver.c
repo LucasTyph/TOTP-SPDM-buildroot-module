@@ -2,12 +2,10 @@
 #include <linux/interrupt.h>
 #include <linux/module.h>
 #include <linux/usb.h>
-#include <linux/mutex.h>
 #include <linux/workqueue.h>
 #include <linux/delay.h>
 #include <linux/reboot.h>
 #include <linux/slab.h>
-#include <linux/mutex.h>
 
 /*
 ** This macro is used to tell the driver to use old method or new method.
@@ -61,7 +59,6 @@ static void print_usb_endpoint_descriptor (const struct usb_endpoint_descriptor 
 
 // Main class struct
 struct totp_spdm_usb {
-	u8 id;
 	unsigned int endpoints_count;
 	struct urb *out_urb;
 	struct urb *in_urb;
@@ -73,20 +70,7 @@ struct totp_spdm_usb {
 	unsigned long buf_size;
 	uint8_t *in_buf;
 	unsigned long in_buf_size;
-	void *private;
-	struct mutex io_mutex;
 } *totp_spdm_usb_struct;
-
-/* get and set the serial private data pointer helper functions */
-static inline void *usb_get_usb_data(struct totp_spdm_usb *usb)
-{
-	return usb->private;
-}
-
-static inline void usb_set_serial_data(struct totp_spdm_usb *usb, void *data)
-{
-	usb->private = data;
-}
 
 /*
 * URB callback function.
@@ -295,7 +279,6 @@ static int __init usb_totp_spdm_init (void) {
 	// create an instance of the driver's struct
 	totp_spdm_usb_struct = vmalloc(sizeof(struct totp_spdm_usb));
 	totp_spdm_usb_struct->endpoints_count = 0;
-	totp_spdm_usb_struct->id = 1;
 
 	// start the workqueue pointer, in case it is not set yet
 	if (!wq){
