@@ -5,7 +5,7 @@
 
 case "$1" in
   start)
-	echo "Starting watchdog..."
+	echo "Starting TOTP SPDM driver..."
 	modprobe totp_spdm_driver
 	;;
   stop)

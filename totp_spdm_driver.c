@@ -6,9 +6,10 @@
 #include <linux/delay.h>
 #include <linux/reboot.h>
 #include <linux/slab.h>
+#include <linux/time.h>
 
 // SPDM includes
-#include "spdm_common_lib.h"
+#include <spdm_common_lib.h>
 
 // TOTP include
 #include "TOTP.h"
@@ -76,6 +77,7 @@ struct totp_spdm_usb {
 	unsigned long buf_size;
 	uint8_t *in_buf;
 	unsigned long in_buf_size;
+	uint32_t totp_code;
 } *totp_spdm_usb_struct;
 
 /*
@@ -87,8 +89,9 @@ static void urb_in_callback(struct urb *urb){
 		pr_info("!urb\n");
 	}
 
+	int i;
 	pr_info("totp_spdm_usb_struct->in_buf: %px\n", totp_spdm_usb_struct->in_buf);
-    for (int i = 0; i < (BUFFER_SIZE)/8; i++){
+    for (i = 0; i < (BUFFER_SIZE)/8; i++){
         pr_info("%02X %02X %02X %02X %02X %02X %02X %02X",
 			totp_spdm_usb_struct->in_buf[8*i+0], totp_spdm_usb_struct->in_buf[8*i+1],
 			totp_spdm_usb_struct->in_buf[8*i+2], totp_spdm_usb_struct->in_buf[8*i+3], 
@@ -133,6 +136,20 @@ static void urb_out_callback(struct urb *urb){
 		usb_free_urb(totp_spdm_usb_struct->in_urb);
 		printk(KERN_INFO "erro %d em usb_submit_urb\n", response);
 	}
+}
+
+static uint32_t get_totp(void){
+	// set key for now
+	// TODO: some different method of getting the key
+	uint8_t hmacKey[] = {0x4d, 0x79, 0x4c, 0x65, 0x67, 0x6f, 0x44, 0x6f, 0x6f, 0x72};
+
+	TOTP(hmacKey, 10, 60); // key, key size, timestep in s
+
+	// get current time
+	struct timespec *ts;
+	getnstimeofday(ts);
+
+	return getCodeFromTimestamp(ts->tv_sec);
 }
 
 /*
@@ -207,6 +224,10 @@ static void totp_spdm_work_handler(struct work_struct *w) {
 
 	while(true){
 		pr_info("work handler\n");
+		totp_spdm_usb_struct->totp_code = get_totp();
+		pr_info("TOTP: %lu\n", (unsigned long)totp_spdm_usb_struct->totp_code);
+		void *spdm_context = (void *)kmalloc (spdm_get_context_size(), GFP_KERNEL);
+
 		send_data();
 		msleep(MS_VERIFICATION_PERIOD);
 	}

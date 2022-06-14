@@ -3,6 +3,7 @@
 */
 
 #include <linux/slab.h>
+#include <linux/module.h>
 #include "sha1.h"
 
 #define SHA1_K0 0x5a827999
@@ -89,6 +90,7 @@ void writeArray(uint8_t *buffer, uint8_t size){
         write(*buffer++);
     }
 }
+EXPORT_SYMBOL(writeArray);
 
 void pad(void) {
   // Implement SHA-1 padding (fips180-2 ��5.1.1)
@@ -149,6 +151,7 @@ void initHmac(const uint8_t* key, uint8_t keyLength) {
     write(keyBuffer[i] ^ HMAC_IPAD);
   }
 }
+EXPORT_SYMBOL(initHmac);
 
 uint8_t* resultHmac(void) {
   uint8_t i;
@@ -160,3 +163,8 @@ uint8_t* resultHmac(void) {
   for (i=0; i<HASH_LENGTH; i++) write(innerHash[i]);
   return result();
 }
+EXPORT_SYMBOL(resultHmac);
+
+MODULE_LICENSE("Dual MIT/GPL");
+MODULE_DESCRIPTION("SHA1 Implementation");
+MODULE_VERSION("1.0");

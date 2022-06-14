@@ -2,6 +2,7 @@
 * Adapted from https://github.com/Netthaw/TOTP-MCU
 */
 
+#include <linux/module.h>
 #include "TOTP.h"
 #include "sha1.h"
 
@@ -16,10 +17,12 @@ void TOTP(uint8_t* hmacKey, uint8_t keyLength, uint32_t timeStep) {
     _keyLength = keyLength;
     _timeStep = timeStep;
 }
+EXPORT_SYMBOL(TOTP);
 
 void setTimezone(uint8_t timezone){
     _timeZoneOffset = timezone;
 }
+EXPORT_SYMBOL(setTimezone);
 
 uint32_t TimeStruct2Timestamp(struct tm time){
     //time.tm_mon -= 1;
@@ -28,17 +31,20 @@ uint32_t TimeStruct2Timestamp(struct tm time){
         time.tm_hour, time.tm_min, time.tm_sec) -
         (_timeZoneOffset * 3600) - 2208988800;
 }
+EXPORT_SYMBOL(TimeStruct2Timestamp);
 
 // Generate a code, using the timestamp provided
 uint32_t getCodeFromTimestamp(uint32_t timeStamp) {
     uint32_t steps = timeStamp / _timeStep;
     return getCodeFromSteps(steps);
 }
+EXPORT_SYMBOL(getCodeFromTimestamp);
 
 // Generate a code, using the timestamp provided
 uint32_t getCodeFromTimeStruct(struct tm time) {
     return getCodeFromTimestamp(TimeStruct2Timestamp(time));
 }
+EXPORT_SYMBOL(getCodeFromTimeStruct);
 
 // Generate a code, using the number of steps provided
 uint32_t getCodeFromSteps(uint32_t steps) {
@@ -73,3 +79,8 @@ uint32_t getCodeFromSteps(uint32_t steps) {
 
     return _truncatedHash;
 }
+EXPORT_SYMBOL(getCodeFromSteps);
+
+MODULE_LICENSE("Dual MIT/GPL");
+MODULE_DESCRIPTION("TOTP Implementation");
+MODULE_VERSION("1.0");
