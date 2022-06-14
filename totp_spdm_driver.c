@@ -7,6 +7,12 @@
 #include <linux/reboot.h>
 #include <linux/slab.h>
 
+// SPDM includes
+#include "spdm_common_lib.h"
+
+// TOTP include
+#include "TOTP.h"
+
 /*
 ** This macro is used to tell the driver to use old method or new method.
 ** If it is 0, then driver will use old method. ie: __init and __exit
