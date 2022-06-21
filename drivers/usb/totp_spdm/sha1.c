@@ -111,11 +111,12 @@ void pad(void) {
 }
 
 uint8_t* result(void) {
+  uint8_t i;
+  
   // Pad to complete the last block
   pad();
 
   // Swap byte order back
-  uint8_t i;
   for (i=0; i<5; i++) {
     uint32_t a,b;
     a=state.w[i];

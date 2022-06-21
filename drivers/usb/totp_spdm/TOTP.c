@@ -48,6 +48,11 @@ EXPORT_SYMBOL(getCodeFromTimeStruct);
 
 // Generate a code, using the number of steps provided
 uint32_t getCodeFromSteps(uint32_t steps) {
+    uint8_t* _hash;
+    uint32_t _truncatedHash;
+    uint8_t _offset;
+    uint8_t j;
+
     // STEP 0, map the number of steps in a 8-bytes array (counter value)
     uint8_t _byteArray[8];
     _byteArray[0] = 0x00;
@@ -62,12 +67,11 @@ uint32_t getCodeFromSteps(uint32_t steps) {
     // STEP 1, get the HMAC-SHA1 hash from counter and key
     initHmac(_hmacKey, _keyLength);
     writeArray(_byteArray, 8);
-    uint8_t* _hash = resultHmac();
+    _hash = resultHmac();
 
     // STEP 2, apply dynamic truncation to obtain a 4-bytes string
-    uint32_t _truncatedHash = 0;
-    uint8_t _offset = _hash[20 - 1] & 0xF;
-    uint8_t j;
+    _truncatedHash = 0;
+    _offset = _hash[20 - 1] & 0xF;
     for (j = 0; j < 4; ++j) {
         _truncatedHash <<= 8;
         _truncatedHash  |= _hash[_offset + j];
