@@ -85,11 +85,12 @@ struct totp_spdm_usb {
 * Will be called every time an incoming URB request finishes
 */
 static void urb_in_callback(struct urb *urb){
+	int i;
+
 	if (!urb){
 		pr_info("!urb\n");
 	}
 
-	int i;
 	pr_info("totp_spdm_usb_struct->in_buf: %px\n", totp_spdm_usb_struct->in_buf);
     for (i = 0; i < (BUFFER_SIZE)/8; i++){
         pr_info("%02X %02X %02X %02X %02X %02X %02X %02X",
@@ -113,6 +114,8 @@ static void urb_in_callback(struct urb *urb){
 * Also sends another URB, which gathers the device's response.
 */
 static void urb_out_callback(struct urb *urb){
+	int response;
+
 	// allocate memory in totp_spdm_usb struct's input buffer and URB
 	// these will be used to get the device's response
 	totp_spdm_usb_struct->in_buf = kmalloc(totp_spdm_usb_struct->buf_size, GFP_ATOMIC);
@@ -131,7 +134,7 @@ static void urb_out_callback(struct urb *urb){
 		urb_in_callback,					// callback funciton
 		totp_spdm_usb_struct				// context (?)
 	);
-	int response = usb_submit_urb(totp_spdm_usb_struct->in_urb, GFP_ATOMIC);
+	response = usb_submit_urb(totp_spdm_usb_struct->in_urb, GFP_ATOMIC);
 	if (response) {
 		usb_free_urb(totp_spdm_usb_struct->in_urb);
 		printk(KERN_INFO "erro %d em usb_submit_urb\n", response);
@@ -139,6 +142,8 @@ static void urb_out_callback(struct urb *urb){
 }
 
 static uint32_t get_totp(void){
+	struct timespec *ts;
+
 	// set key for now
 	// TODO: some different method of getting the key
 	uint8_t hmacKey[] = {0x4d, 0x79, 0x4c, 0x65, 0x67, 0x6f, 0x44, 0x6f, 0x6f, 0x72};
@@ -146,7 +151,7 @@ static uint32_t get_totp(void){
 	TOTP(hmacKey, 10, 60); // key, key size, timestep in s
 
 	// get current time
-	struct timespec *ts;
+	ts = kmalloc(sizeof(*ts), GFP_KERNEL);
 	getnstimeofday(ts);
 
 	return getCodeFromTimestamp(ts->tv_sec);
@@ -156,9 +161,10 @@ static uint32_t get_totp(void){
 * Temporary function to set buffer and buffer size
 */
 static void set_buffer(void){
-	totp_spdm_usb_struct->buf_size = BUFFER_SIZE;
 	uint8_t data[BUFFER_SIZE] = {[0] = 5, [1] = 0x11, [2] = 0xe1, [9] = 0xc6, [10] = 0xf7};
 	//05 11 e1 00 00 00 00 00 00 c6 f7 00 00
+
+	totp_spdm_usb_struct->buf_size = BUFFER_SIZE;
 	totp_spdm_usb_struct->buf = kmalloc(totp_spdm_usb_struct->buf_size, GFP_KERNEL);
 	memcpy(totp_spdm_usb_struct->buf, data, BUFFER_SIZE);
 }
@@ -202,6 +208,7 @@ static void send_data(void){
 static void totp_spdm_work_handler(struct work_struct *w) {
 	int tries;
 	bool device_found = false;
+	void *spdm_context;
 
 	// Maybe in some world it takes longer for the device to be found
 	// For this case, a timeout with a set number of tries
@@ -226,7 +233,7 @@ static void totp_spdm_work_handler(struct work_struct *w) {
 		pr_info("work handler\n");
 		totp_spdm_usb_struct->totp_code = get_totp();
 		pr_info("TOTP: %lu\n", (unsigned long)totp_spdm_usb_struct->totp_code);
-		void *spdm_context = (void *)kmalloc (spdm_get_context_size(), GFP_KERNEL);
+		spdm_context = (void *)kmalloc (spdm_get_context_size(), GFP_KERNEL);
 
 		send_data();
 		msleep(MS_VERIFICATION_PERIOD);
@@ -237,13 +244,16 @@ static void totp_spdm_work_handler(struct work_struct *w) {
 ** This function will be called when USB device is inserted.
 */
 static int usb_totp_spdm_probe (struct usb_interface *interface, const struct usb_device_id *id) {
+	struct usb_endpoint_descriptor *bulk_in, *bulk_out;
+	struct usb_host_interface *iface_desc;
+	unsigned int i;
+	int retval;
+
 	printk(KERN_INFO "usb_totp_spdm_probe\n");
 	totp_spdm_usb_struct->dev = interface_to_usbdev(interface);
-	struct usb_endpoint_descriptor *bulk_in, *bulk_out;
 
 	// Endpoint-related kernel prints
-	unsigned int i;
-	struct usb_host_interface *iface_desc = interface->cur_altsetting;
+	iface_desc = interface->cur_altsetting;
 	dev_info(&interface->dev, "USB Driver Probed: Vendor ID : 0x%02x,\t"
 		"Product ID : 0x%02x\n", id->idVendor, id->idProduct);
 
@@ -257,7 +267,7 @@ static int usb_totp_spdm_probe (struct usb_interface *interface, const struct us
 
 	/* set up the endpoint information */
 	/* use only the first bulk-in and bulk-out endpoints */
-	int retval = usb_find_common_endpoints(iface_desc,
+	retval = usb_find_common_endpoints(iface_desc,
 			&bulk_in, &bulk_out, NULL, NULL);
 	if (retval) {
 		dev_err(&interface->dev,
