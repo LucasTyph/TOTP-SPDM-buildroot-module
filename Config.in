@@ -1,5 +1,0 @@
-config BR2_PACKAGE_TOTP_SPDM
-	bool "totp_spdm"
-	depends on BR2_LINUX_KERNEL
-	help
-	  TOTP + SPDM driver implementation.
