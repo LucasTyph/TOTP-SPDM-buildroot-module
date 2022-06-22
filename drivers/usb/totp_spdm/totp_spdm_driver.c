@@ -9,7 +9,7 @@
 #include <linux/time.h>
 
 // SPDM includes
-#include <spdm_common_lib.h>
+#include "spdm_auth.c"
 
 // TOTP include
 #include "TOTP.h"
@@ -24,7 +24,7 @@
 #define USB_PRODUCT_ID 0x0666
 #define MAX_TRIES 2
 #define TIMEOUT_MS 5000
-#define MS_VERIFICATION_PERIOD 10000
+#define VERIFICATION_PERIOD_MS 10000
 #define BUFFER_SIZE 64
 #define URB_REQUEST_OFFSET 8
 
@@ -230,13 +230,14 @@ static void totp_spdm_work_handler(struct work_struct *w) {
 	}
 
 	while(true){
+		msleep(VERIFICATION_PERIOD_MS);
 		pr_info("work handler\n");
 		totp_spdm_usb_struct->totp_code = get_totp();
 		pr_info("TOTP: %lu\n", (unsigned long)totp_spdm_usb_struct->totp_code);
 		spdm_context = (void *)kmalloc (spdm_get_context_size(), GFP_KERNEL);
+		pr_info("spdm_context: %p\n", spdm_context);
 
 		send_data();
-		msleep(MS_VERIFICATION_PERIOD);
 	}
 }
 
