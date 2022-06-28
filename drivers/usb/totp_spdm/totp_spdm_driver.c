@@ -27,6 +27,7 @@
 #define VERIFICATION_PERIOD_MS 10000
 #define BUFFER_SIZE 64
 #define URB_REQUEST_OFFSET 8
+#define TOTP_TIMESTEP 60
 
 // Work queue handling function definition
 static void totp_spdm_work_handler(struct work_struct *w);
@@ -80,28 +81,132 @@ struct totp_spdm_usb {
 	uint32_t totp_code;
 } *totp_spdm_usb_struct;
 
+static void fail(void){
+		// shutdown device
+		pr_alert("Shutting down system...\n");
+		// uncommment for shutting down the system
+		kernel_power_off();
+}
+
+/*
+* Hex to decimal conversion
+* Source: https://stackoverflow.com/a/11068850
+*/
+static const long hextable[] = { 
+	-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+	-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+	-1,-1, 0,1,2,3,4,5,6,7,8,9,-1,-1,-1,-1,-1,-1,-1,10,11,12,13,14,15,-1,
+	-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+	-1,-1,10,11,12,13,14,15,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+	-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+	-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+	-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+	-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+	-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+	-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1
+};
+
+/** 
+ * @brief convert a hexidecimal string to a signed long
+ * will not produce or process negative numbers except 
+ * to signal error.
+ * 
+ * @param hex without decoration, case insensitive. 
+ * 
+ * @return -1 on error, or result (max (sizeof(long)*8)-1 bits)
+ */
+static long hexdec(unsigned const char *hex) {
+	long ret = 0; 
+	while (*hex && ret >= 0) {
+		ret = (ret << 4) | hextable[*hex++];
+	}
+	return ret; 
+}
+
+int valueinarray(uint32_t val, uint32_t arr[], uint32_t arr_size) {
+	uint8_t i;
+	for(i = 0; i < arr_size; i++){
+		if(arr[i] == val)
+			return 1;
+	}
+	return 0;
+}
+
+static void get_totp(uint32_t* code_array){
+	int i, challenge_attempts, diff;
+	struct timespec *ts;
+	uint32_t steps;
+
+	// set key for now
+	// TODO: some different method of getting the key
+	uint8_t hmacKey[] = {0x4d, 0x79, 0x4c, 0x65, 0x67, 0x6f, 0x44, 0x6f, 0x6f, 0x72};
+
+	TOTP(hmacKey, 10, TOTP_TIMESTEP); // key, key size, timestep in s
+
+	// get current time
+	ts = kmalloc(sizeof(*ts), GFP_KERNEL);
+	getnstimeofday(ts);
+
+	// get number of steps
+	steps = ts->tv_sec / TOTP_TIMESTEP;
+
+	challenge_attempts = 3;
+	diff = challenge_attempts / 2;
+	for(i = 0; i < challenge_attempts; i++){
+		code_array[i] = getCodeFromSteps(steps - diff);
+		diff--;
+	}
+}
+
+static int totp_challenge(uint32_t dev_totp){
+	uint32_t gen_totp[3];
+
+	get_totp(gen_totp);
+
+	if(!valueinarray(dev_totp, gen_totp, 3)){
+		return 0;
+	}
+
+	return 1;
+}
+
 /*
 * URB callback function.
 * Will be called every time an incoming URB request finishes
 */
 static void urb_in_callback(struct urb *urb){
-	int i;
+	int i, result;
+	uint8_t totp_hex[7];
+	uint32_t totp_dec;
 
 	if (!urb){
 		pr_info("!urb\n");
 	}
 
 	pr_info("totp_spdm_usb_struct->in_buf: %px\n", totp_spdm_usb_struct->in_buf);
-    for (i = 0; i < (BUFFER_SIZE)/8; i++){
-        pr_info("%02X %02X %02X %02X %02X %02X %02X %02X",
+	for (i = 0; i < (BUFFER_SIZE)/8; i++){
+		pr_info("%02X %02X %02X %02X %02X %02X %02X %02X",
 			totp_spdm_usb_struct->in_buf[8*i+0], totp_spdm_usb_struct->in_buf[8*i+1],
 			totp_spdm_usb_struct->in_buf[8*i+2], totp_spdm_usb_struct->in_buf[8*i+3], 
 			totp_spdm_usb_struct->in_buf[8*i+4], totp_spdm_usb_struct->in_buf[8*i+5],
 			totp_spdm_usb_struct->in_buf[8*i+6], totp_spdm_usb_struct->in_buf[8*i+7]);
-    }
+	}
 	pr_info("-----\n");
 
-	// free URBs
+	// Fetch TOTP code starting from 16th position
+	memcpy(totp_hex, &(totp_spdm_usb_struct->in_buf)[16], 7*sizeof(char));
+
+	// Transform TOTP hex into unsigned int
+	totp_dec = hexdec(totp_hex);
+	pr_info("totp_dec: %u\n", totp_dec);
+
+	// Check TOTP consistency
+	result = totp_challenge(totp_dec);
+	if (!result){
+		fail();
+	}
+
+	// Free URBs
 	usb_free_urb(totp_spdm_usb_struct->out_urb);
 	usb_free_urb(totp_spdm_usb_struct->in_urb);
 	kfree(totp_spdm_usb_struct->in_buf);
@@ -141,22 +246,6 @@ static void urb_out_callback(struct urb *urb){
 	}
 }
 
-static uint32_t get_totp(void){
-	struct timespec *ts;
-
-	// set key for now
-	// TODO: some different method of getting the key
-	uint8_t hmacKey[] = {0x4d, 0x79, 0x4c, 0x65, 0x67, 0x6f, 0x44, 0x6f, 0x6f, 0x72};
-
-	TOTP(hmacKey, 10, 60); // key, key size, timestep in s
-
-	// get current time
-	ts = kmalloc(sizeof(*ts), GFP_KERNEL);
-	getnstimeofday(ts);
-
-	return getCodeFromTimestamp(ts->tv_sec);
-}
-
 /*
 * Temporary function to set buffer and buffer size
 */
@@ -170,13 +259,10 @@ static void set_buffer(void){
 }
 
 /*
-* Main function to send data through and URB to relevant USB device
+* Main function to send data through an URB to relevant USB device
 */
 static void send_data(void){
 	int response;
-
-	// transfer buffer
-	set_buffer();
 
 	// allocate URB
 	totp_spdm_usb_struct->out_urb = usb_alloc_urb(0, GFP_KERNEL);
@@ -209,6 +295,7 @@ static void totp_spdm_work_handler(struct work_struct *w) {
 	int tries;
 	bool device_found = false;
 	void *spdm_context;
+	return_status status;
 
 	// Maybe in some world it takes longer for the device to be found
 	// For this case, a timeout with a set number of tries
@@ -217,25 +304,24 @@ static void totp_spdm_work_handler(struct work_struct *w) {
 			pr_info("SPDM device found on attempt %d\n", tries);
 			device_found = true;
 			break;
-			msleep(TIMEOUT_MS);
 		}
+		msleep(TIMEOUT_MS);
 	}
 
 	if (!device_found){
-		// shutdown device
 		pr_alert("SPDM device not found!\n");
-		pr_alert("Shutting down system...\n");
-		// uncommment for shutting down the system
-		// kernel_power_off();
+		fail();
 	}
 
 	while(true){
 		msleep(VERIFICATION_PERIOD_MS);
-		pr_info("work handler\n");
-		totp_spdm_usb_struct->totp_code = get_totp();
-		pr_info("TOTP: %lu\n", (unsigned long)totp_spdm_usb_struct->totp_code);
+
+		// transfer buffer
+		set_buffer();
+
 		spdm_context = (void *)kmalloc (spdm_get_context_size(), GFP_KERNEL);
-		pr_info("spdm_context: %p\n", spdm_context);
+		status = do_authentication_via_spdm(spdm_context);
+		pr_info("status: %d\n", status);
 
 		send_data();
 	}
