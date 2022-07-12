@@ -93,7 +93,6 @@ struct totp_spdm_usb {
 	// variables locked by spinlock
 	bool in_urb_is_active;
 	bool out_urb_is_active;
-	spinlock_t *urb_lock;
 } *totp_spdm_usb_struct;
 
 static void fail(void){
@@ -151,9 +150,9 @@ static void recv_arbitrary_data(void *data, size_t size){
 	);
 
 	// Submit urb
-	response = usb_submit_urb(totp_spdm_usb_struct->out_urb, GFP_KERNEL);
+	response = usb_submit_urb(totp_spdm_usb_struct->in_urb, GFP_KERNEL);
 	if (response) {
-		usb_free_urb(totp_spdm_usb_struct->out_urb);
+		usb_free_urb(totp_spdm_usb_struct->in_urb);
 		printk(KERN_INFO "erro %d em usb_submit_urb\n", response);
 	}
 }
@@ -169,6 +168,7 @@ static return_status spdm_usb_receive_message(
 	size_t size = *response_size;
 	recv_arbitrary_data(response, size);
 	*response_size = size;
+	pr_info("Received SPDM request with size %llu", *response_size);
 	return RETURN_SUCCESS;
 }
 
@@ -228,6 +228,7 @@ static return_status spdm_usb_send_message(
 			IN uintn request_size,
 			IN void *request,
 			IN uint64 timeout) {
+	pr_info("Sending SPDM request with size %u", request_size);
 	send_arbitrary_data(request, request_size);
 	return RETURN_SUCCESS;
 }
@@ -593,7 +594,7 @@ static void totp_spdm_work_handler(struct work_struct *w) {
 			totp_spdm_usb_struct->spdm_context,
 			(m_exe_connection & EXE_CONNECTION_VERSION_ONLY) != 0);
 	if (RETURN_ERROR(totp_spdm_usb_struct->spdm_status)) {
-		pr_alert("Error on spdm_init_connection.");
+		pr_alert("Error on spdm_init_connection: %u.", totp_spdm_usb_struct->spdm_status);
 		err_free_spdm();
 		fail();
 	} else {
