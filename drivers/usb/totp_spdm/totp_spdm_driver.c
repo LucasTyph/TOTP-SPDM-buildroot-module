@@ -168,7 +168,7 @@ static return_status spdm_usb_receive_message(
 	size_t size = *response_size;
 	recv_arbitrary_data(response, size);
 	*response_size = size;
-	pr_info("Received SPDM request with size %llu", *response_size);
+	pr_info("Received SPDM request with size %llu\n", *response_size);
 	return RETURN_SUCCESS;
 }
 
@@ -228,7 +228,7 @@ static return_status spdm_usb_send_message(
 			IN uintn request_size,
 			IN void *request,
 			IN uint64 timeout) {
-	pr_info("Sending SPDM request with size %llu", request_size);
+	pr_info("Sending SPDM request with size %llu\n", request_size);
 	send_arbitrary_data(request, request_size);
 	return RETURN_SUCCESS;
 }
@@ -244,7 +244,7 @@ static void* init_spdm(void) {
 	spdm_data_parameter_t parameter;
 	spdm_version_number_t spdm_version;
 
-	pr_info("spdm_context size: 0x%x", (uint32_t)spdm_get_context_size());
+	pr_info("spdm_context size: 0x%x\n", (uint32_t)spdm_get_context_size());
 	spdm_context = (void *)kmalloc(spdm_get_context_size(), GFP_KERNEL);
 	if (spdm_context == NULL) {
 		pr_alert("Failed to initialize SPDM context.\n");
