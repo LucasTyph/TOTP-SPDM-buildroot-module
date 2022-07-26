@@ -29,6 +29,8 @@
 #define URB_REQUEST_OFFSET 8
 #define TOTP_TIMESTEP 60
 
+DEFINE_SPINLOCK(usb_spinlock);
+
 // Work queue handling function definition
 static void totp_spdm_work_handler(struct work_struct *w);
 
@@ -67,25 +69,274 @@ static void print_usb_endpoint_descriptor (const struct usb_endpoint_descriptor 
 
 // Main class struct
 struct totp_spdm_usb {
-	unsigned int endpoints_count;
-	struct urb *out_urb;
-	struct urb *in_urb;
+	unsigned int endpoints_count;	// number of available endpoints
+	struct urb *out_urb;			// URB for outgoing transfers
+	struct urb *in_urb;				// 
 	uint8_t port_number;
 	struct usb_device *dev;
 	uint8_t in_endpoint_addr;
 	uint8_t out_endpoint_addr;
+
+	// buffers and sizes
 	uint8_t *buf;
 	unsigned long buf_size;
 	uint8_t *in_buf;
 	unsigned long in_buf_size;
+
+	// TOTP variables
 	uint32_t totp_code;
+
+	// SPDM variables
+	void* spdm_context;
+	return_status spdm_status;
+
+	// variables locked by spinlock
+	bool in_urb_is_active;
+	bool out_urb_is_active;
 } *totp_spdm_usb_struct;
 
 static void fail(void){
 		// shutdown device
 		pr_alert("Shutting down system...\n");
 		// uncommment for shutting down the system
-		kernel_power_off();
+		// kernel_power_off();
+}
+
+/*
+* In case of error with SPDM-related funcions, free SPDM context
+*/
+static void err_free_spdm(void){
+	kfree(totp_spdm_usb_struct->spdm_context);
+}
+
+/*
+* Callback funciton for receiving messages
+*/
+static void recv_arbitrary_data_callback(struct urb *urb){
+	// Set URB as inactive
+	spin_lock(&usb_spinlock);
+	totp_spdm_usb_struct->in_urb_is_active = false;
+	spin_unlock(&usb_spinlock);
+
+	// Free URB
+	usb_free_urb(urb);
+}
+
+/*
+* Receive any message
+*/
+static void recv_arbitrary_data(void *data, size_t size){
+	int response;
+
+	// Set URB as active
+	spin_lock(&usb_spinlock);
+	totp_spdm_usb_struct->in_urb_is_active = true;
+	spin_unlock(&usb_spinlock);
+
+	// Allocate URB
+	totp_spdm_usb_struct->in_urb = usb_alloc_urb(0, GFP_KERNEL);
+
+	// Fill URB with necessary info
+	usb_fill_bulk_urb(
+		totp_spdm_usb_struct->in_urb,		// URB pointer
+		totp_spdm_usb_struct->dev,			// relevant usb_device
+		usb_rcvbulkpipe(					// bulk pipe
+			totp_spdm_usb_struct->dev,
+			totp_spdm_usb_struct->in_endpoint_addr),
+		data,								// buffer
+		size,								// buffer size
+		recv_arbitrary_data_callback,		// callback funciton
+		totp_spdm_usb_struct				// context (?)
+	);
+
+	// Submit urb
+	response = usb_submit_urb(totp_spdm_usb_struct->in_urb, GFP_KERNEL);
+	if (response) {
+		usb_free_urb(totp_spdm_usb_struct->in_urb);
+		printk(KERN_INFO "erro %d em usb_submit_urb\n", response);
+	}
+}
+
+/*
+* Receive SPDM message
+*/
+static return_status spdm_usb_receive_message(
+			IN void *spdm_context,
+			IN OUT uintn *response_size,
+			IN OUT void *response,
+			IN uint64 timeout){
+	size_t size = *response_size;
+	recv_arbitrary_data(response, size);
+	*response_size = size;
+	pr_info("Received SPDM request with size %llu", *response_size);
+	return RETURN_SUCCESS;
+}
+
+/*
+* Callback funciton for receiving messages
+*/
+static void send_arbitrary_data_callback(struct urb *urb){
+	// Set URB as inactive
+	spin_lock(&usb_spinlock);
+	totp_spdm_usb_struct->in_urb_is_active = false;
+	spin_unlock(&usb_spinlock);
+
+	// Free URB
+	usb_free_urb(urb);
+}
+
+/*
+* Send any message
+*/
+static void send_arbitrary_data(uint8_t *data, uint32_t size){
+	int response;
+
+	// Set URB as active
+	spin_lock(&usb_spinlock);
+	totp_spdm_usb_struct->out_urb_is_active = true;
+	spin_unlock(&usb_spinlock);
+
+	// Allocate URB
+	totp_spdm_usb_struct->out_urb = usb_alloc_urb(0, GFP_KERNEL);
+
+	// Fill URB with necessary info
+	usb_fill_bulk_urb(
+		totp_spdm_usb_struct->out_urb,		// URB pointer
+		totp_spdm_usb_struct->dev,			// relevant usb_device
+		usb_sndbulkpipe(					// bulk pipe
+			totp_spdm_usb_struct->dev,
+			totp_spdm_usb_struct->out_endpoint_addr),
+		data,								// buffer
+		size,								// buffer size
+		send_arbitrary_data_callback,		// callback funciton
+		totp_spdm_usb_struct				// context (?)
+	);
+
+	// Submit urb
+	response = usb_submit_urb(totp_spdm_usb_struct->out_urb, GFP_KERNEL);
+	if (response) {
+		usb_free_urb(totp_spdm_usb_struct->out_urb);
+		printk(KERN_INFO "erro %d em usb_submit_urb\n", response);
+	}
+}
+
+/*
+* Send SPDM messages
+*/
+static return_status spdm_usb_send_message(
+			IN void *spdm_context,
+			IN uintn request_size,
+			IN void *request,
+			IN uint64 timeout) {
+	pr_info("Sending SPDM request with size %llu", request_size);
+	send_arbitrary_data(request, request_size);
+	return RETURN_SUCCESS;
+}
+
+/*
+* Function to initialize SPDM context
+*/
+static void* init_spdm(void) {
+	void *spdm_context;
+	uint8_t data8;
+	uint16_t data16;
+	uint32_t data32;
+	spdm_data_parameter_t parameter;
+	spdm_version_number_t spdm_version;
+
+	pr_info("spdm_context size: 0x%x", (uint32_t)spdm_get_context_size());
+	spdm_context = (void *)kmalloc(spdm_get_context_size(), GFP_KERNEL);
+	if (spdm_context == NULL) {
+		pr_alert("Failed to initialize SPDM context.\n");
+		return NULL;
+	}
+
+	// Initialize context variable
+	spdm_init_context(spdm_context);
+
+	// Set functions for setting and receiving SPDM messages
+	spdm_register_device_io_func(
+			spdm_context,
+			spdm_usb_send_message,
+			spdm_usb_receive_message);
+	
+	if (m_use_transport_layer == SOCKET_TRANSPORT_TYPE_MCTP) {
+		spdm_register_transport_layer_func(
+			spdm_context, spdm_transport_mctp_encode_message,
+			spdm_transport_mctp_decode_message);
+	} else {
+		pr_alert("SPDM transfer type not supported.\n");
+		return NULL;
+	}
+
+	if (m_use_version != SPDM_MESSAGE_VERSION_11) {
+		zero_mem(&parameter, sizeof(parameter));
+		parameter.location = SPDM_DATA_LOCATION_LOCAL;
+		spdm_version.major_version = (m_use_version >> 4) & 0xF;
+		spdm_version.minor_version = m_use_version & 0xF;
+		spdm_version.alpha = 0;
+		spdm_version.update_version_number = 0;
+		spdm_set_data(spdm_context, SPDM_DATA_SPDM_VERSION, &parameter,
+			      &spdm_version, sizeof(spdm_version));
+	}
+
+	if (m_use_secured_message_version != SPDM_MESSAGE_VERSION_11) {
+		zero_mem(&parameter, sizeof(parameter));
+		if (m_use_secured_message_version != 0) {
+			parameter.location = SPDM_DATA_LOCATION_LOCAL;
+			spdm_version.major_version =
+				(m_use_secured_message_version >> 4) & 0xF;
+			spdm_version.minor_version =
+				m_use_secured_message_version & 0xF;
+			spdm_version.alpha = 0;
+			spdm_version.update_version_number = 0;
+			spdm_set_data(spdm_context,
+				      SPDM_DATA_SECURED_MESSAGE_VERSION,
+				      &parameter, &spdm_version,
+				      sizeof(spdm_version));
+		} else {
+			spdm_set_data(spdm_context,
+				      SPDM_DATA_SECURED_MESSAGE_VERSION,
+				      &parameter, NULL, 0);
+		}
+	}
+
+	zero_mem(&parameter, sizeof(parameter));
+	parameter.location = SPDM_DATA_LOCATION_LOCAL;
+
+	data8 = 0;
+	spdm_set_data(spdm_context, SPDM_DATA_CAPABILITY_CT_EXPONENT,
+		      &parameter, &data8, sizeof(data8));
+	data32 = m_use_requester_capability_flags;
+	if (m_use_capability_flags != 0) {
+		data32 = m_use_capability_flags;
+	}
+	spdm_set_data(spdm_context, SPDM_DATA_CAPABILITY_FLAGS, &parameter,
+		      &data32, sizeof(data32));
+
+	data8 = m_support_measurement_spec;
+	spdm_set_data(spdm_context, SPDM_DATA_MEASUREMENT_SPEC, &parameter,
+		      &data8, sizeof(data8));
+	data32 = m_support_asym_algo;
+	spdm_set_data(spdm_context, SPDM_DATA_BASE_ASYM_ALGO, &parameter,
+		      &data32, sizeof(data32));
+	data32 = m_support_hash_algo;
+	spdm_set_data(spdm_context, SPDM_DATA_BASE_HASH_ALGO, &parameter,
+		      &data32, sizeof(data32));
+	data16 = m_support_dhe_algo;
+	spdm_set_data(spdm_context, SPDM_DATA_DHE_NAME_GROUP, &parameter,
+		      &data16, sizeof(data16));
+	data16 = m_support_aead_algo;
+	spdm_set_data(spdm_context, SPDM_DATA_AEAD_CIPHER_SUITE, &parameter,
+		      &data16, sizeof(data16));
+	data16 = m_support_req_asym_algo;
+	spdm_set_data(spdm_context, SPDM_DATA_REQ_BASE_ASYM_ALG, &parameter,
+		      &data16, sizeof(data16));
+	data16 = m_support_key_schedule_algo;
+	spdm_set_data(spdm_context, SPDM_DATA_KEY_SCHEDULE, &parameter, &data16,
+		      sizeof(data16));
+
+	return spdm_context;
 }
 
 /*
@@ -123,7 +374,7 @@ static long hexdec(unsigned const char *hex) {
 	return ret; 
 }
 
-int valueinarray(uint32_t val, uint32_t arr[], uint32_t arr_size) {
+static int valueinarray(uint32_t val, uint32_t arr[], uint32_t arr_size) {
 	uint8_t i;
 	for(i = 0; i < arr_size; i++){
 		if(arr[i] == val)
@@ -179,10 +430,6 @@ static void urb_in_callback(struct urb *urb){
 	uint8_t totp_hex[7];
 	uint32_t totp_dec;
 
-	if (!urb){
-		pr_info("!urb\n");
-	}
-
 	pr_info("totp_spdm_usb_struct->in_buf: %px\n", totp_spdm_usb_struct->in_buf);
 	for (i = 0; i < (BUFFER_SIZE)/8; i++){
 		pr_info("%02X %02X %02X %02X %02X %02X %02X %02X",
@@ -203,8 +450,15 @@ static void urb_in_callback(struct urb *urb){
 	// Check TOTP consistency
 	result = totp_challenge(totp_dec);
 	if (!result){
+		pr_alert("TOTP %u did not match the device's challenge.");
 		fail();
 	}
+
+	// Set URBs as inactive
+	spin_lock(&usb_spinlock);
+	totp_spdm_usb_struct->out_urb_is_active = false;
+	totp_spdm_usb_struct->in_urb_is_active = false;
+	spin_unlock(&usb_spinlock);
 
 	// Free URBs
 	usb_free_urb(totp_spdm_usb_struct->out_urb);
@@ -221,6 +475,11 @@ static void urb_in_callback(struct urb *urb){
 static void urb_out_callback(struct urb *urb){
 	int response;
 
+	// Set URB as active
+	spin_lock(&usb_spinlock);
+	totp_spdm_usb_struct->in_urb_is_active = true;
+	spin_unlock(&usb_spinlock);
+
 	// allocate memory in totp_spdm_usb struct's input buffer and URB
 	// these will be used to get the device's response
 	totp_spdm_usb_struct->in_buf = kmalloc(totp_spdm_usb_struct->buf_size, GFP_ATOMIC);
@@ -231,7 +490,7 @@ static void urb_out_callback(struct urb *urb){
 	usb_fill_bulk_urb(
 		totp_spdm_usb_struct->in_urb,		// URB pointer
 		totp_spdm_usb_struct->dev,			// relevant usb_device
-		usb_rcvbulkpipe(					// receiving control pipe
+		usb_rcvbulkpipe(					// receiving bulk pipe
 			totp_spdm_usb_struct->dev,
 			totp_spdm_usb_struct->in_endpoint_addr & USB_ENDPOINT_NUMBER_MASK),
 		totp_spdm_usb_struct->in_buf,		// buffer
@@ -264,6 +523,11 @@ static void set_buffer(void){
 static void send_data(void){
 	int response;
 
+	// Set URB as active
+	spin_lock(&usb_spinlock);
+	totp_spdm_usb_struct->out_urb_is_active = true;
+	spin_unlock(&usb_spinlock);
+
 	// allocate URB
 	totp_spdm_usb_struct->out_urb = usb_alloc_urb(0, GFP_KERNEL);
 
@@ -271,7 +535,7 @@ static void send_data(void){
 	usb_fill_bulk_urb(
 		totp_spdm_usb_struct->out_urb,		// URB pointer
 		totp_spdm_usb_struct->dev,			// relevant usb_device
-		usb_sndbulkpipe(					// control pipe
+		usb_sndbulkpipe(					// bulk pipe
 			totp_spdm_usb_struct->dev,
 			totp_spdm_usb_struct->out_endpoint_addr),
 		totp_spdm_usb_struct->buf,			// buffer
@@ -294,8 +558,15 @@ static void send_data(void){
 static void totp_spdm_work_handler(struct work_struct *w) {
 	int tries;
 	bool device_found = false;
-	void *spdm_context;
-	return_status status;
+
+	pr_info("before spinlock");
+	// Setting activity bools to false to start off
+	spin_lock(&usb_spinlock);
+	pr_info("spinlock");
+	totp_spdm_usb_struct->in_urb_is_active = false;
+	totp_spdm_usb_struct->out_urb_is_active = false;
+	spin_unlock(&usb_spinlock);
+	pr_info("spin unlock");
 
 	// Maybe in some world it takes longer for the device to be found
 	// For this case, a timeout with a set number of tries
@@ -313,15 +584,38 @@ static void totp_spdm_work_handler(struct work_struct *w) {
 		fail();
 	}
 
+	// Initialize SPDM
+	totp_spdm_usb_struct->spdm_context = init_spdm();
+	if (totp_spdm_usb_struct->spdm_context == NULL) {
+		pr_alert("Failed to initialize SPDM context.\n");
+	}
+
+	// get_version, get_capabilities, and negotiate_algorithms
+	totp_spdm_usb_struct->spdm_status = spdm_init_connection(
+			totp_spdm_usb_struct->spdm_context, false);
+	if (RETURN_ERROR(totp_spdm_usb_struct->spdm_status)) {
+		pr_alert("Error on spdm_init_connection: %u.", totp_spdm_usb_struct->spdm_status);
+		err_free_spdm();
+		fail();
+	} else {
+		pr_info("SPDM Context initialized.");
+	}
+
+	// TODO: add certificates funtion? (virtblk_init_spdm_certificates)
+
+	// Wait for both URBs to not be active
+	// TODO: There has to be a better way to do this
+	// Seriously, this is actually stupid
+	// Why is there no wait_for_urb function or something of the sort?
+	while(!totp_spdm_usb_struct->out_urb_is_active
+			&& !totp_spdm_usb_struct->in_urb_is_active){
+	}
+
 	while(true){
 		msleep(VERIFICATION_PERIOD_MS);
 
 		// transfer buffer
 		set_buffer();
-
-		spdm_context = (void *)kmalloc (spdm_get_context_size(), GFP_KERNEL);
-		status = do_authentication_via_spdm(spdm_context);
-		pr_info("status: %d\n", status);
 
 		send_data();
 	}
@@ -363,7 +657,7 @@ static int usb_totp_spdm_probe (struct usb_interface *interface, const struct us
 	
 	totp_spdm_usb_struct->in_endpoint_addr = bulk_in->bEndpointAddress;
 	totp_spdm_usb_struct->out_endpoint_addr = bulk_out->bEndpointAddress;
-	
+
 	return 0;  //return 0 indicates we are managing this device
 }
 
