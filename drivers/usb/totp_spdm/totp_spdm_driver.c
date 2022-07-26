@@ -228,7 +228,7 @@ static return_status spdm_usb_send_message(
 			IN uintn request_size,
 			IN void *request,
 			IN uint64 timeout) {
-	pr_info("Sending SPDM request with size %u", request_size);
+	pr_info("Sending SPDM request with size %llu", request_size);
 	send_arbitrary_data(request, request_size);
 	return RETURN_SUCCESS;
 }
@@ -244,6 +244,7 @@ static void* init_spdm(void) {
 	spdm_data_parameter_t parameter;
 	spdm_version_number_t spdm_version;
 
+	pr_info("spdm_context size: 0x%x", (uint32_t)spdm_get_context_size());
 	spdm_context = (void *)kmalloc(spdm_get_context_size(), GFP_KERNEL);
 	if (spdm_context == NULL) {
 		pr_alert("Failed to initialize SPDM context.\n");
@@ -591,8 +592,7 @@ static void totp_spdm_work_handler(struct work_struct *w) {
 
 	// get_version, get_capabilities, and negotiate_algorithms
 	totp_spdm_usb_struct->spdm_status = spdm_init_connection(
-			totp_spdm_usb_struct->spdm_context,
-			(m_exe_connection & EXE_CONNECTION_VERSION_ONLY) != 0);
+			totp_spdm_usb_struct->spdm_context, false);
 	if (RETURN_ERROR(totp_spdm_usb_struct->spdm_status)) {
 		pr_alert("Error on spdm_init_connection: %u.", totp_spdm_usb_struct->spdm_status);
 		err_free_spdm();
@@ -600,6 +600,8 @@ static void totp_spdm_work_handler(struct work_struct *w) {
 	} else {
 		pr_info("SPDM Context initialized.");
 	}
+
+	// TODO: add certificates funtion? (virtblk_init_spdm_certificates)
 
 	// Wait for both URBs to not be active
 	// TODO: There has to be a better way to do this
