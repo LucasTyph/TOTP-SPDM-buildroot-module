@@ -32,6 +32,10 @@
 #define BUFFER_SIZE 64
 #define URB_REQUEST_OFFSET 8
 #define TOTP_TIMESTEP 60
+#define TOTP_HEX_SIZE 6
+#define LEN_HEX_SIZE 4
+#define SPDM_RECEIVE_OFFSET 10     // TOTP_HEX_SIZE + LEN_HEX_SIZE
+#define TOTP_CHALLENGE_ATTEMPTS 3
 
 DEFINE_SPINLOCK(usb_spinlock);
 
@@ -86,10 +90,6 @@ struct totp_spdm_usb {
 	unsigned long buf_size;
 	uint8_t *in_buf;
 	unsigned long in_buf_size;
-
-	// TOTP variables
-	uint8_t totp_hex[7];
-	uint32_t totp_code;
 
 	// SPDM variables
 	void* spdm_context;
@@ -156,13 +156,84 @@ static long hexdec(unsigned const char *hex) {
 * Fetches SPDM response size from specific byte from the response itself
 */
 static size_t get_size_from_response(void) {
-	uint8_t size_hex[4];
+	uint8_t size_hex[LEN_HEX_SIZE];
 	unsigned long size_dec;
 
-	memcpy(size_hex, totp_spdm_usb_struct->response_data, 4);
+	memcpy(size_hex, totp_spdm_usb_struct->response_data, LEN_HEX_SIZE*sizeof(uint8_t));
 	size_dec = hexdec(size_hex);
 	pr_info ("size_dec: %lu", size_dec);
 	return size_dec;
+}
+
+static int valueinarray(uint32_t val, uint32_t arr[], uint32_t arr_size) {
+	uint8_t i;
+	for(i = 0; i < arr_size; i++){
+		if(arr[i] == val)
+			return 1;
+	}
+	return 0;
+}
+
+static void get_totp(uint32_t* code_array){
+	int i, diff;
+	struct timespec *ts;
+	uint32_t steps;
+
+	// set key for now
+	// TODO: some different method of getting the key
+	uint8_t hmacKey[] = {0x4d, 0x79, 0x4c, 0x65, 0x67, 0x6f, 0x44, 0x6f, 0x6f, 0x72};
+
+	TOTP(hmacKey, 10, TOTP_TIMESTEP); // key, key size, timestep in s
+
+	// Get current time
+	ts = kmalloc(sizeof(*ts), GFP_KERNEL);
+	getnstimeofday(ts);
+
+	// Get number of steps
+	steps = ts->tv_sec / TOTP_TIMESTEP;
+
+	// This weird for loop creates TOTP_CHALLENGE_ATTEMPTS TOTPs
+	// It should create half of TOTP_CHALLENGE_ATTEMPTS, rounded down, 
+	// attempts before and after the specific amount of timesteps
+	// as such, TOTP_CHALLENGE_ATTEMPTS = 3 tries from steps-1 to steps+1
+	// TOTP_CHALLENGE_ATTEMPTS = 5 tries from steps-2 to steps+2 and so on
+	diff = TOTP_CHALLENGE_ATTEMPTS / 2;
+	for(i = 0; i < TOTP_CHALLENGE_ATTEMPTS; i++){
+		code_array[i] = getCodeFromSteps(steps - diff);
+		diff--;
+	}
+}
+
+static int totp_challenge(uint32_t dev_totp){
+	uint32_t driver_totp_array[TOTP_CHALLENGE_ATTEMPTS];
+
+	get_totp(driver_totp_array);
+
+	if(!valueinarray(dev_totp, driver_totp_array, TOTP_CHALLENGE_ATTEMPTS)){
+		return 0;
+	}
+
+	return 1;
+}
+
+static void verify_totp_from_response(void) {
+	uint8_t totp_hex[TOTP_HEX_SIZE];
+	uint32_t totp_dec;
+	int result;
+
+	// Fetch TOTP code starting from 4th position
+	memcpy(totp_hex, totp_spdm_usb_struct->response_data + LEN_HEX_SIZE, TOTP_HEX_SIZE*sizeof(char));
+
+	// Transform TOTP hex into unsigned int
+	totp_dec = hexdec(totp_hex);
+	pr_info("totp_dec: %u\n", totp_dec);
+
+	// Check TOTP consistency
+	result = totp_challenge(totp_dec);
+	if (!result){
+		pr_alert("TOTP %u did not match the device's challenge.", totp_dec);
+		fail();
+	}
 }
 
 /*
@@ -173,26 +244,19 @@ static void recv_arbitrary_data_callback(struct urb *urb){
 	
 	// Work with received data
 	totp_spdm_usb_struct->response_size = get_size_from_response();
+	verify_totp_from_response();
 	memmove (totp_spdm_usb_struct->response_data,
-			totp_spdm_usb_struct->response_data + 10,
+			totp_spdm_usb_struct->response_data + SPDM_RECEIVE_OFFSET,
 			(totp_spdm_usb_struct->response_size) * sizeof(uint8_t));
 
 	pr_info("totp_spdm_usb_struct->response_data:\n");
-	/*
-	for (i = 0; i < (totp_spdm_usb_struct->response_size)/16; i++){
-		pr_info("%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
-			((uint8_t *)(totp_spdm_usb_struct->response_data))[16*i+0], ((uint8_t *)(totp_spdm_usb_struct->response_data))[16*i+1],
-			((uint8_t *)(totp_spdm_usb_struct->response_data))[16*i+2], ((uint8_t *)(totp_spdm_usb_struct->response_data))[16*i+3], 
-			((uint8_t *)(totp_spdm_usb_struct->response_data))[16*i+4], ((uint8_t *)(totp_spdm_usb_struct->response_data))[16*i+5],
-			((uint8_t *)(totp_spdm_usb_struct->response_data))[16*i+6], ((uint8_t *)(totp_spdm_usb_struct->response_data))[16*i+7],
-			((uint8_t *)(totp_spdm_usb_struct->response_data))[16*i+8], ((uint8_t *)(totp_spdm_usb_struct->response_data))[16*i+9],
-			((uint8_t *)(totp_spdm_usb_struct->response_data))[16*i+10], ((uint8_t *)(totp_spdm_usb_struct->response_data))[16*i+11], 
-			((uint8_t *)(totp_spdm_usb_struct->response_data))[16*i+12], ((uint8_t *)(totp_spdm_usb_struct->response_data))[16*i+13],
-			((uint8_t *)(totp_spdm_usb_struct->response_data))[16*i+14], ((uint8_t *)(totp_spdm_usb_struct->response_data))[16*i+15]);
-	}
-	*/
 	for (i = 0; i < totp_spdm_usb_struct->response_size; i++){
-		pr_info("%02X", ((uint8_t *)(totp_spdm_usb_struct->response_data))[i]);
+		if ((i+1)%8 != 0){
+			pr_cont("%02X ", ((uint8_t *)(totp_spdm_usb_struct->response_data))[i]);
+		}
+		else {
+			pr_info("%02X ", ((uint8_t *)(totp_spdm_usb_struct->response_data))[i]);
+		}
 	}
 
 	// Set URB as inactive
@@ -274,21 +338,13 @@ static return_status spdm_usb_receive_message(
 	pr_info("Received SPDM response with size %llu\n", *response_size);
 	
 	pr_info("SPDM response:\n");
-	/*
-	for (i = 0; i < (*response_size)/16; i++){
-		pr_info("%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
-			((uint8_t *)response)[16*i+0], ((uint8_t *)response)[16*i+1],
-			((uint8_t *)response)[16*i+2], ((uint8_t *)response)[16*i+3], 
-			((uint8_t *)response)[16*i+4], ((uint8_t *)response)[16*i+5],
-			((uint8_t *)response)[16*i+6], ((uint8_t *)response)[16*i+7],
-			((uint8_t *)response)[16*i+8], ((uint8_t *)response)[16*i+9],
-			((uint8_t *)response)[16*i+10], ((uint8_t *)response)[16*i+11], 
-			((uint8_t *)response)[16*i+12], ((uint8_t *)response)[16*i+13],
-			((uint8_t *)response)[16*i+14], ((uint8_t *)response)[16*i+15]);
-	}
-	*/
 	for (i = 0; i < *response_size; i++){
-		pr_info("%02X", ((uint8_t *)(response))[i]);
+		if ((i+1)%8 != 0){
+			pr_cont("%02X ", ((uint8_t *)response)[i]);
+		}
+		else {
+			pr_info("%02X ", ((uint8_t *)response)[i]);
+		}
 	}
 	return RETURN_SUCCESS;
 }
@@ -549,57 +605,11 @@ void init_spdm_certificates(void* spdm_context) {
 
 }
 
-static int valueinarray(uint32_t val, uint32_t arr[], uint32_t arr_size) {
-	uint8_t i;
-	for(i = 0; i < arr_size; i++){
-		if(arr[i] == val)
-			return 1;
-	}
-	return 0;
-}
-
-static void get_totp(uint32_t* code_array){
-	int i, challenge_attempts, diff;
-	struct timespec *ts;
-	uint32_t steps;
-
-	// set key for now
-	// TODO: some different method of getting the key
-	uint8_t hmacKey[] = {0x4d, 0x79, 0x4c, 0x65, 0x67, 0x6f, 0x44, 0x6f, 0x6f, 0x72};
-
-	TOTP(hmacKey, 10, TOTP_TIMESTEP); // key, key size, timestep in s
-
-	// get current time
-	ts = kmalloc(sizeof(*ts), GFP_KERNEL);
-	getnstimeofday(ts);
-
-	// get number of steps
-	steps = ts->tv_sec / TOTP_TIMESTEP;
-
-	challenge_attempts = 3;
-	diff = challenge_attempts / 2;
-	for(i = 0; i < challenge_attempts; i++){
-		code_array[i] = getCodeFromSteps(steps - diff);
-		diff--;
-	}
-}
-
-static int totp_challenge(uint32_t dev_totp){
-	uint32_t gen_totp[3];
-
-	get_totp(gen_totp);
-
-	if(!valueinarray(dev_totp, gen_totp, 3)){
-		return 0;
-	}
-
-	return 1;
-}
-
 /*
 * URB callback function.
 * Will be called every time an incoming URB request finishes
 */
+/*
 static void urb_in_callback(struct urb *urb){
 	int i, result;
 	uint32_t totp_dec;
@@ -640,12 +650,14 @@ static void urb_in_callback(struct urb *urb){
 	kfree(totp_spdm_usb_struct->in_buf);
 	kfree(totp_spdm_usb_struct->buf);
 }
+*/
 
 /*
 * URB callback function.
 * Will be called every time an outgoing URB request finishes.
 * Also sends another URB, which gathers the device's response.
 */
+/*
 static void urb_out_callback(struct urb *urb){
 	int response;
 
@@ -678,10 +690,12 @@ static void urb_out_callback(struct urb *urb){
 		printk(KERN_INFO "erro %d em usb_submit_urb\n", response);
 	}
 }
+*/
 
 /*
 * Temporary function to set buffer and buffer size
 */
+/*
 static void set_buffer(void){
 	uint8_t data[BUFFER_SIZE] = {[0] = 0, [1] = 1, [2] = 2, [9] = 9, [10] = 10};
 	//01 02 03 00 00 00 00 00 00 09 0A 00 00
@@ -690,10 +704,12 @@ static void set_buffer(void){
 	totp_spdm_usb_struct->buf = kmalloc(totp_spdm_usb_struct->buf_size, GFP_KERNEL);
 	memcpy(totp_spdm_usb_struct->buf, data, BUFFER_SIZE);
 }
+*/
 
 /*
 * Main function to send data through an URB to relevant USB device
 */
+/*
 static void send_data(void){
 	int response;
 
@@ -725,6 +741,7 @@ static void send_data(void){
 		printk(KERN_INFO "erro %d em usb_submit_urb\n", response);
 	}
 }
+*/
 
 /*
 * Work queue function called continuously
