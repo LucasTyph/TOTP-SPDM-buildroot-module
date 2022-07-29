@@ -15,6 +15,9 @@
 // TOTP include
 #include "TOTP.h"
 
+// Certificates include
+#include "certs.h"
+
 /*
 ** This macro is used to tell the driver to use old method or new method.
 ** If it is 0, then driver will use old method. ie: __init and __exit
@@ -469,20 +472,6 @@ void init_spdm_certificates(void* spdm_context) {
 	uint8_t data8;
 	uint16_t data16;
 	uint32_t data32;
-	uintn responder_public_certificate_chain_size;
-	uint8_t responder_public_certificate_chain_data[519];
-	uintn responder_public_certificate_chain_hash_size;
-	uint8_t responder_public_certificate_chain_hash[48];
-	uintn requester_public_certificate_chain_size;
-	uint8_t requester_public_certificate_chain_data[3684];
-
-	// TODO: probably set these variables properly
-	responder_public_certificate_chain_size = 519;
-	responder_public_certificate_chain_data[0] = 0x00;
-	responder_public_certificate_chain_hash_size = 48;
-	responder_public_certificate_chain_hash[0] = 0x00;
-	requester_public_certificate_chain_size = 3684;
-	requester_public_certificate_chain_data[0] = 0x00;
 
 	pr_info("init_spdm_certificates\n");
 	zero_mem(&parameter, sizeof(parameter));
@@ -799,11 +788,13 @@ static void totp_spdm_work_handler(struct work_struct *w) {
 
 	while(true){
 		msleep(VERIFICATION_PERIOD_MS);
+		// TODO: periodic SPDM checks
+		pr_info("Initializing periodic SPDM checks.");
 
 		// transfer buffer
-		set_buffer();
+		// set_buffer();
 
-		send_data();
+		// send_data();
 	}
 }
 
