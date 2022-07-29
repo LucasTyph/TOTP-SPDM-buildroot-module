@@ -7,6 +7,7 @@
 #include <linux/reboot.h>
 #include <linux/slab.h>
 #include <linux/time.h>
+#include <linux/completion.h>
 
 // SPDM includes
 #include "spdm_auth.c"
@@ -84,11 +85,15 @@ struct totp_spdm_usb {
 	unsigned long in_buf_size;
 
 	// TOTP variables
+	uint8_t totp_hex[7];
 	uint32_t totp_code;
 
 	// SPDM variables
 	void* spdm_context;
 	return_status spdm_status;
+	void* response_data;
+	size_t response_size;
+	struct completion spdm_response_done;
 
 	// variables locked by spinlock
 	bool in_urb_is_active;
@@ -110,13 +115,92 @@ static void err_free_spdm(void){
 }
 
 /*
+* Hex to decimal conversion
+* Source: https://stackoverflow.com/a/11068850
+*/
+static const long hextable[] = { 
+	-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+	-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+	-1,-1, 0,1,2,3,4,5,6,7,8,9,-1,-1,-1,-1,-1,-1,-1,10,11,12,13,14,15,-1,
+	-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+	-1,-1,10,11,12,13,14,15,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+	-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+	-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+	-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+	-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+	-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+	-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1
+};
+
+/** 
+ * @brief convert a hexidecimal string to a signed long
+ * will not produce or process negative numbers except 
+ * to signal error.
+ * 
+ * @param hex without decoration, case insensitive. 
+ * 
+ * @return -1 on error, or result (max (sizeof(long)*8)-1 bits)
+ */
+static long hexdec(unsigned const char *hex) {
+	long ret = 0; 
+	while (*hex && ret >= 0) {
+		ret = (ret << 4) | hextable[*hex++];
+	}
+	return ret; 
+}
+
+/*
+* Fetches SPDM response size from specific byte from the response itself
+*/
+static size_t get_size_from_response(void) {
+	uint8_t size_hex[4];
+	unsigned long size_dec;
+
+	memcpy(size_hex, totp_spdm_usb_struct->response_data, 4);
+	size_dec = hexdec(size_hex);
+	pr_info ("size_dec: %lu", size_dec);
+	return size_dec;
+}
+
+/*
 * Callback funciton for receiving messages
 */
 static void recv_arbitrary_data_callback(struct urb *urb){
+	int i;
+	
+	// Work with received data
+	totp_spdm_usb_struct->response_size = get_size_from_response();
+	memmove (totp_spdm_usb_struct->response_data,
+			totp_spdm_usb_struct->response_data + 10,
+			(totp_spdm_usb_struct->response_size) * sizeof(uint8_t));
+
+	pr_info("totp_spdm_usb_struct->response_data:\n");
+	/*
+	for (i = 0; i < (totp_spdm_usb_struct->response_size)/16; i++){
+		pr_info("%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
+			((uint8_t *)(totp_spdm_usb_struct->response_data))[16*i+0], ((uint8_t *)(totp_spdm_usb_struct->response_data))[16*i+1],
+			((uint8_t *)(totp_spdm_usb_struct->response_data))[16*i+2], ((uint8_t *)(totp_spdm_usb_struct->response_data))[16*i+3], 
+			((uint8_t *)(totp_spdm_usb_struct->response_data))[16*i+4], ((uint8_t *)(totp_spdm_usb_struct->response_data))[16*i+5],
+			((uint8_t *)(totp_spdm_usb_struct->response_data))[16*i+6], ((uint8_t *)(totp_spdm_usb_struct->response_data))[16*i+7],
+			((uint8_t *)(totp_spdm_usb_struct->response_data))[16*i+8], ((uint8_t *)(totp_spdm_usb_struct->response_data))[16*i+9],
+			((uint8_t *)(totp_spdm_usb_struct->response_data))[16*i+10], ((uint8_t *)(totp_spdm_usb_struct->response_data))[16*i+11], 
+			((uint8_t *)(totp_spdm_usb_struct->response_data))[16*i+12], ((uint8_t *)(totp_spdm_usb_struct->response_data))[16*i+13],
+			((uint8_t *)(totp_spdm_usb_struct->response_data))[16*i+14], ((uint8_t *)(totp_spdm_usb_struct->response_data))[16*i+15]);
+	}
+	*/
+	for (i = 0; i < totp_spdm_usb_struct->response_size; i++){
+		pr_info("%02X", ((uint8_t *)(totp_spdm_usb_struct->response_data))[i]);
+	}
+
 	// Set URB as inactive
 	spin_lock(&usb_spinlock);
 	totp_spdm_usb_struct->in_urb_is_active = false;
 	spin_unlock(&usb_spinlock);
+
+	if (!completion_done (&totp_spdm_usb_struct->spdm_response_done)){
+		complete (&totp_spdm_usb_struct->spdm_response_done);
+		pr_info("spdm_response_done completed");
+	}
 
 	// Free URB
 	usb_free_urb(urb);
@@ -125,8 +209,9 @@ static void recv_arbitrary_data_callback(struct urb *urb){
 /*
 * Receive any message
 */
-static void recv_arbitrary_data(void *data, size_t size){
+static void recv_arbitrary_data(void *data, size_t *size){
 	int response;
+	struct urb *in_urb;
 
 	// Set URB as active
 	spin_lock(&usb_spinlock);
@@ -134,25 +219,25 @@ static void recv_arbitrary_data(void *data, size_t size){
 	spin_unlock(&usb_spinlock);
 
 	// Allocate URB
-	totp_spdm_usb_struct->in_urb = usb_alloc_urb(0, GFP_KERNEL);
+	in_urb = usb_alloc_urb(0, GFP_KERNEL);
 
 	// Fill URB with necessary info
 	usb_fill_bulk_urb(
-		totp_spdm_usb_struct->in_urb,		// URB pointer
+		in_urb,								// URB pointer
 		totp_spdm_usb_struct->dev,			// relevant usb_device
 		usb_rcvbulkpipe(					// bulk pipe
 			totp_spdm_usb_struct->dev,
 			totp_spdm_usb_struct->in_endpoint_addr),
 		data,								// buffer
-		size,								// buffer size
+		*size,								// buffer size
 		recv_arbitrary_data_callback,		// callback funciton
 		totp_spdm_usb_struct				// context (?)
 	);
 
 	// Submit urb
-	response = usb_submit_urb(totp_spdm_usb_struct->in_urb, GFP_KERNEL);
+	response = usb_submit_urb(in_urb, GFP_KERNEL);
 	if (response) {
-		usb_free_urb(totp_spdm_usb_struct->in_urb);
+		usb_free_urb(in_urb);
 		printk(KERN_INFO "erro %d em usb_submit_urb\n", response);
 	}
 }
@@ -165,10 +250,43 @@ static return_status spdm_usb_receive_message(
 			IN OUT uintn *response_size,
 			IN OUT void *response,
 			IN uint64 timeout){
-	size_t size = *response_size;
-	recv_arbitrary_data(response, size);
-	*response_size = size;
-	pr_info("Received SPDM request with size %llu\n", *response_size);
+	int i;
+
+	// initializing completion struct
+	init_completion(&totp_spdm_usb_struct->spdm_response_done);
+
+	// Setting the response array to the maximum possible size initially
+	totp_spdm_usb_struct->response_data = kmalloc(4608, GFP_DMA);
+	totp_spdm_usb_struct->response_size = *response_size;
+	pr_info("original size: %llu\n", *response_size);
+	recv_arbitrary_data(totp_spdm_usb_struct->response_data, &(totp_spdm_usb_struct->response_size));
+
+	// Code must (not) continue until the response is completed.
+	// Sending and receiving URBs is not a synchronous process, so
+	// this is necessary to make sure we have the right data here.
+	wait_for_completion(&totp_spdm_usb_struct->spdm_response_done);
+
+	*response_size = totp_spdm_usb_struct->response_size;
+	memcpy(response, totp_spdm_usb_struct->response_data, totp_spdm_usb_struct->response_size);
+	pr_info("Received SPDM response with size %llu\n", *response_size);
+	
+	pr_info("SPDM response:\n");
+	/*
+	for (i = 0; i < (*response_size)/16; i++){
+		pr_info("%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
+			((uint8_t *)response)[16*i+0], ((uint8_t *)response)[16*i+1],
+			((uint8_t *)response)[16*i+2], ((uint8_t *)response)[16*i+3], 
+			((uint8_t *)response)[16*i+4], ((uint8_t *)response)[16*i+5],
+			((uint8_t *)response)[16*i+6], ((uint8_t *)response)[16*i+7],
+			((uint8_t *)response)[16*i+8], ((uint8_t *)response)[16*i+9],
+			((uint8_t *)response)[16*i+10], ((uint8_t *)response)[16*i+11], 
+			((uint8_t *)response)[16*i+12], ((uint8_t *)response)[16*i+13],
+			((uint8_t *)response)[16*i+14], ((uint8_t *)response)[16*i+15]);
+	}
+	*/
+	for (i = 0; i < *response_size; i++){
+		pr_info("%02X", ((uint8_t *)(response))[i]);
+	}
 	return RETURN_SUCCESS;
 }
 
@@ -190,6 +308,7 @@ static void send_arbitrary_data_callback(struct urb *urb){
 */
 static void send_arbitrary_data(uint8_t *data, uint32_t size){
 	int response;
+	struct urb *out_urb;
 
 	// Set URB as active
 	spin_lock(&usb_spinlock);
@@ -197,11 +316,11 @@ static void send_arbitrary_data(uint8_t *data, uint32_t size){
 	spin_unlock(&usb_spinlock);
 
 	// Allocate URB
-	totp_spdm_usb_struct->out_urb = usb_alloc_urb(0, GFP_KERNEL);
+	out_urb = usb_alloc_urb(0, GFP_KERNEL);
 
 	// Fill URB with necessary info
 	usb_fill_bulk_urb(
-		totp_spdm_usb_struct->out_urb,		// URB pointer
+		out_urb,							// URB pointer
 		totp_spdm_usb_struct->dev,			// relevant usb_device
 		usb_sndbulkpipe(					// bulk pipe
 			totp_spdm_usb_struct->dev,
@@ -213,9 +332,9 @@ static void send_arbitrary_data(uint8_t *data, uint32_t size){
 	);
 
 	// Submit urb
-	response = usb_submit_urb(totp_spdm_usb_struct->out_urb, GFP_KERNEL);
+	response = usb_submit_urb(out_urb, GFP_KERNEL);
 	if (response) {
-		usb_free_urb(totp_spdm_usb_struct->out_urb);
+		usb_free_urb(out_urb);
 		printk(KERN_INFO "erro %d em usb_submit_urb\n", response);
 	}
 }
@@ -339,39 +458,106 @@ static void* init_spdm(void) {
 	return spdm_context;
 }
 
-/*
-* Hex to decimal conversion
-* Source: https://stackoverflow.com/a/11068850
-*/
-static const long hextable[] = { 
-	-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-	-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-	-1,-1, 0,1,2,3,4,5,6,7,8,9,-1,-1,-1,-1,-1,-1,-1,10,11,12,13,14,15,-1,
-	-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-	-1,-1,10,11,12,13,14,15,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-	-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-	-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-	-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-	-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-	-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
-	-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1
-};
+#define TEST_PSK_DATA_STRING "TestPskData"
+#define TEST_PSK_HINT_STRING "TestPskHint"
 
-/** 
- * @brief convert a hexidecimal string to a signed long
- * will not produce or process negative numbers except 
- * to signal error.
- * 
- * @param hex without decoration, case insensitive. 
- * 
- * @return -1 on error, or result (max (sizeof(long)*8)-1 bits)
- */
-static long hexdec(unsigned const char *hex) {
-	long ret = 0; 
-	while (*hex && ret >= 0) {
-		ret = (ret << 4) | hextable[*hex++];
+void init_spdm_certificates(void* spdm_context) {
+	uint8_t index;
+	return_status status;
+	uintn data_size;
+	spdm_data_parameter_t parameter;
+	uint8_t data8;
+	uint16_t data16;
+	uint32_t data32;
+	uintn responder_public_certificate_chain_size;
+	uint8_t responder_public_certificate_chain_data[519];
+	uintn responder_public_certificate_chain_hash_size;
+	uint8_t responder_public_certificate_chain_hash[48];
+	uintn requester_public_certificate_chain_size;
+	uint8_t requester_public_certificate_chain_data[3684];
+
+	// TODO: probably set these variables properly
+	responder_public_certificate_chain_size = 519;
+	responder_public_certificate_chain_data[0] = 0x00;
+	responder_public_certificate_chain_hash_size = 48;
+	responder_public_certificate_chain_hash[0] = 0x00;
+	requester_public_certificate_chain_size = 3684;
+	requester_public_certificate_chain_data[0] = 0x00;
+
+	pr_info("init_spdm_certificates\n");
+	zero_mem(&parameter, sizeof(parameter));
+	parameter.location = SPDM_DATA_LOCATION_CONNECTION;
+
+	data_size = sizeof(data32);
+	spdm_get_data(spdm_context, SPDM_DATA_CONNECTION_STATE, &parameter,
+		      &data32, &data_size);
+	ASSERT(data32 == SPDM_CONNECTION_STATE_NEGOTIATED);
+
+	data_size = sizeof(data32);
+	spdm_get_data(spdm_context, SPDM_DATA_MEASUREMENT_HASH_ALGO, &parameter,
+		      &data32, &data_size);
+	m_use_measurement_hash_algo = data32;
+	
+	data_size = sizeof(data32);
+	spdm_get_data(spdm_context, SPDM_DATA_BASE_ASYM_ALGO, &parameter,
+		      &data32, &data_size);
+	m_use_asym_algo = data32;
+	
+	data_size = sizeof(data32);
+	spdm_get_data(spdm_context, SPDM_DATA_BASE_HASH_ALGO, &parameter,
+		      &data32, &data_size);
+	m_use_hash_algo = data32;
+	
+	data_size = sizeof(data16);
+	spdm_get_data(spdm_context, SPDM_DATA_REQ_BASE_ASYM_ALG, &parameter,
+		      &data16, &data_size);
+	m_use_req_asym_algo = data16;
+
+	if ((m_use_slot_id == 0xFF) ||
+			((m_use_requester_capability_flags &
+			SPDM_GET_CAPABILITIES_REQUEST_FLAGS_PUB_KEY_ID_CAP) != 0)) {
+		zero_mem(&parameter, sizeof(parameter));
+		parameter.location = SPDM_DATA_LOCATION_LOCAL;
+		spdm_set_data(spdm_context,
+				SPDM_DATA_PEER_PUBLIC_CERT_CHAIN,
+				&parameter,
+				responder_public_certificate_chain_data,
+				responder_public_certificate_chain_size);
+	} else {
+		zero_mem(&parameter, sizeof(parameter));
+		parameter.location = SPDM_DATA_LOCATION_LOCAL;
+		spdm_set_data(spdm_context,
+				SPDM_DATA_PEER_PUBLIC_ROOT_CERT_HASH,
+				&parameter,
+				responder_public_certificate_chain_hash,
+				responder_public_certificate_chain_hash_size);
 	}
-	return ret; 
+		zero_mem(&parameter, sizeof(parameter));
+		parameter.location = SPDM_DATA_LOCATION_LOCAL;
+		data8 = m_use_slot_count;
+		spdm_set_data(spdm_context, SPDM_DATA_LOCAL_SLOT_COUNT,
+			      &parameter, &data8, sizeof(data8));
+
+		for (index = 0; index < m_use_slot_count; index++) {
+			parameter.additional_data[0] = index;
+			spdm_set_data(spdm_context,
+					SPDM_DATA_LOCAL_PUBLIC_CERT_CHAIN,
+					&parameter,
+					requester_public_certificate_chain_data,
+					requester_public_certificate_chain_size);
+		}
+
+	status = spdm_set_data(
+			spdm_context,
+			SPDM_DATA_PSK_HINT,
+			NULL,
+			TEST_PSK_HINT_STRING,
+			sizeof(TEST_PSK_HINT_STRING));
+	
+	if (RETURN_ERROR(status)) {
+		printk("spdm_set_data - %x\n", (uint32)status);
+	}
+
 }
 
 static int valueinarray(uint32_t val, uint32_t arr[], uint32_t arr_size) {
@@ -427,7 +613,6 @@ static int totp_challenge(uint32_t dev_totp){
 */
 static void urb_in_callback(struct urb *urb){
 	int i, result;
-	uint8_t totp_hex[7];
 	uint32_t totp_dec;
 
 	pr_info("totp_spdm_usb_struct->in_buf: %px\n", totp_spdm_usb_struct->in_buf);
@@ -441,16 +626,16 @@ static void urb_in_callback(struct urb *urb){
 	pr_info("-----\n");
 
 	// Fetch TOTP code starting from 16th position
-	memcpy(totp_hex, &(totp_spdm_usb_struct->in_buf)[16], 7*sizeof(char));
+	memcpy(totp_spdm_usb_struct->totp_hex, &(totp_spdm_usb_struct->in_buf)[16], 7*sizeof(char));
 
 	// Transform TOTP hex into unsigned int
-	totp_dec = hexdec(totp_hex);
+	totp_dec = hexdec(totp_spdm_usb_struct->totp_hex);
 	pr_info("totp_dec: %u\n", totp_dec);
 
 	// Check TOTP consistency
 	result = totp_challenge(totp_dec);
 	if (!result){
-		pr_alert("TOTP %u did not match the device's challenge.");
+		pr_alert("TOTP %u did not match the device's challenge.", totp_dec);
 		fail();
 	}
 
@@ -509,8 +694,8 @@ static void urb_out_callback(struct urb *urb){
 * Temporary function to set buffer and buffer size
 */
 static void set_buffer(void){
-	uint8_t data[BUFFER_SIZE] = {[0] = 5, [1] = 0x11, [2] = 0xe1, [9] = 0xc6, [10] = 0xf7};
-	//05 11 e1 00 00 00 00 00 00 c6 f7 00 00
+	uint8_t data[BUFFER_SIZE] = {[0] = 0, [1] = 1, [2] = 2, [9] = 9, [10] = 10};
+	//01 02 03 00 00 00 00 00 00 09 0A 00 00
 
 	totp_spdm_usb_struct->buf_size = BUFFER_SIZE;
 	totp_spdm_usb_struct->buf = kmalloc(totp_spdm_usb_struct->buf_size, GFP_KERNEL);
@@ -594,7 +779,7 @@ static void totp_spdm_work_handler(struct work_struct *w) {
 	totp_spdm_usb_struct->spdm_status = spdm_init_connection(
 			totp_spdm_usb_struct->spdm_context, false);
 	if (RETURN_ERROR(totp_spdm_usb_struct->spdm_status)) {
-		pr_alert("Error on spdm_init_connection: %u.", totp_spdm_usb_struct->spdm_status);
+		pr_alert("Error on spdm_init_connection: %llX.", totp_spdm_usb_struct->spdm_status);
 		err_free_spdm();
 		fail();
 	} else {
@@ -602,6 +787,7 @@ static void totp_spdm_work_handler(struct work_struct *w) {
 	}
 
 	// TODO: add certificates funtion? (virtblk_init_spdm_certificates)
+	// init_spdm_certificates(totp_spdm_usb_struct->spdm_context);
 
 	// Wait for both URBs to not be active
 	// TODO: There has to be a better way to do this
