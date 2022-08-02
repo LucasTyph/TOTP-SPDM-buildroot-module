@@ -37,8 +37,6 @@
 #define SPDM_RECEIVE_OFFSET 10     // TOTP_HEX_SIZE + LEN_HEX_SIZE
 #define TOTP_CHALLENGE_ATTEMPTS 3
 
-DEFINE_SPINLOCK(usb_spinlock);
-
 // Work queue handling function definition
 static void totp_spdm_work_handler(struct work_struct *w);
 
@@ -85,22 +83,12 @@ struct totp_spdm_usb {
 	uint8_t in_endpoint_addr;
 	uint8_t out_endpoint_addr;
 
-	// buffers and sizes
-	uint8_t *buf;
-	unsigned long buf_size;
-	uint8_t *in_buf;
-	unsigned long in_buf_size;
-
 	// SPDM variables
 	void* spdm_context;
 	return_status spdm_status;
 	void* response_data;
 	size_t response_size;
 	struct completion spdm_response_done;
-
-	// variables locked by spinlock
-	bool in_urb_is_active;
-	bool out_urb_is_active;
 } *totp_spdm_usb_struct;
 
 static void fail(void){
@@ -259,11 +247,6 @@ static void recv_arbitrary_data_callback(struct urb *urb){
 		}
 	}
 
-	// Set URB as inactive
-	spin_lock(&usb_spinlock);
-	totp_spdm_usb_struct->in_urb_is_active = false;
-	spin_unlock(&usb_spinlock);
-
 	if (!completion_done (&totp_spdm_usb_struct->spdm_response_done)){
 		complete (&totp_spdm_usb_struct->spdm_response_done);
 		pr_info("spdm_response_done completed");
@@ -279,11 +262,6 @@ static void recv_arbitrary_data_callback(struct urb *urb){
 static void recv_arbitrary_data(void *data, size_t *size){
 	int response;
 	struct urb *in_urb;
-
-	// Set URB as active
-	spin_lock(&usb_spinlock);
-	totp_spdm_usb_struct->in_urb_is_active = true;
-	spin_unlock(&usb_spinlock);
 
 	// Allocate URB
 	in_urb = usb_alloc_urb(0, GFP_KERNEL);
@@ -353,11 +331,6 @@ static return_status spdm_usb_receive_message(
 * Callback funciton for receiving messages
 */
 static void send_arbitrary_data_callback(struct urb *urb){
-	// Set URB as inactive
-	spin_lock(&usb_spinlock);
-	totp_spdm_usb_struct->in_urb_is_active = false;
-	spin_unlock(&usb_spinlock);
-
 	// Free URB
 	usb_free_urb(urb);
 }
@@ -368,11 +341,6 @@ static void send_arbitrary_data_callback(struct urb *urb){
 static void send_arbitrary_data(uint8_t *data, uint32_t size){
 	int response;
 	struct urb *out_urb;
-
-	// Set URB as active
-	spin_lock(&usb_spinlock);
-	totp_spdm_usb_struct->out_urb_is_active = true;
-	spin_unlock(&usb_spinlock);
 
 	// Allocate URB
 	out_urb = usb_alloc_urb(0, GFP_KERNEL);
@@ -750,15 +718,6 @@ static void totp_spdm_work_handler(struct work_struct *w) {
 	int tries;
 	bool device_found = false;
 
-	pr_info("before spinlock");
-	// Setting activity bools to false to start off
-	spin_lock(&usb_spinlock);
-	pr_info("spinlock");
-	totp_spdm_usb_struct->in_urb_is_active = false;
-	totp_spdm_usb_struct->out_urb_is_active = false;
-	spin_unlock(&usb_spinlock);
-	pr_info("spin unlock");
-
 	// Maybe in some world it takes longer for the device to be found
 	// For this case, a timeout with a set number of tries
 	for (tries = 0; tries < MAX_TRIES; tries++){
@@ -794,14 +753,6 @@ static void totp_spdm_work_handler(struct work_struct *w) {
 
 	// TODO: add certificates funtion? (virtblk_init_spdm_certificates)
 	// init_spdm_certificates(totp_spdm_usb_struct->spdm_context);
-
-	// Wait for both URBs to not be active
-	// TODO: There has to be a better way to do this
-	// Seriously, this is actually stupid
-	// Why is there no wait_for_urb function or something of the sort?
-	while(!totp_spdm_usb_struct->out_urb_is_active
-			&& !totp_spdm_usb_struct->in_urb_is_active){
-	}
 
 	while(true){
 		msleep(VERIFICATION_PERIOD_MS);
