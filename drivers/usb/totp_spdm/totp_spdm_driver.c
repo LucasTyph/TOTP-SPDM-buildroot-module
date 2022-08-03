@@ -89,6 +89,7 @@ struct totp_spdm_usb {
 	void* response_data;
 	size_t response_size;
 	struct completion spdm_response_done;
+	struct completion spdm_request_sent;
 	uint32_t session_id;
 } *totp_spdm_usb_struct;
 
@@ -332,6 +333,11 @@ static return_status spdm_usb_receive_message(
 * Callback funciton for receiving messages
 */
 static void send_arbitrary_data_callback(struct urb *urb){
+	if (!completion_done (&totp_spdm_usb_struct->spdm_request_sent)){
+		complete (&totp_spdm_usb_struct->spdm_request_sent);
+		pr_info("spdm_request_sent completed");
+	}
+
 	// Free URB
 	usb_free_urb(urb);
 }
@@ -375,8 +381,21 @@ static return_status spdm_usb_send_message(
 			IN uintn request_size,
 			IN void *request,
 			IN uint64 timeout) {
+	void *request_with_length_header;
+	char len_str[LEN_HEX_SIZE];
 	pr_info("Sending SPDM request with size %llu\n", request_size);
-	send_arbitrary_data(request, request_size);
+	init_completion(&totp_spdm_usb_struct->spdm_request_sent);
+
+	// Add 4 bytes of length to first positions of request buffer
+	request_with_length_header = kmalloc(request_size + LEN_HEX_SIZE, GFP_KERNEL);
+	sprintf(len_str, "%llx", request_size);
+	memcpy(request_with_length_header, len_str, LEN_HEX_SIZE*sizeof(char));
+
+	// Copy rest of request buffer
+	memcpy(request_with_length_header + LEN_HEX_SIZE, request, request_size);
+	send_arbitrary_data(request_with_length_header, request_size + LEN_HEX_SIZE);
+
+	wait_for_completion(&totp_spdm_usb_struct->spdm_request_sent);
 	return RETURN_SUCCESS;
 }
 
