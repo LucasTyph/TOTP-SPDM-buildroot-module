@@ -28,7 +28,7 @@
 #define USB_PRODUCT_ID 0x0666
 #define MAX_TRIES 2
 #define TIMEOUT_MS 5000
-#define VERIFICATION_PERIOD_MS 10000
+#define VERIFICATION_PERIOD_MS 40000
 #define BUFFER_SIZE 64
 #define URB_REQUEST_OFFSET 8
 #define TOTP_TIMESTEP 60
@@ -89,6 +89,7 @@ struct totp_spdm_usb {
 	void* response_data;
 	size_t response_size;
 	struct completion spdm_response_done;
+	uint32_t session_id;
 } *totp_spdm_usb_struct;
 
 static void fail(void){
@@ -545,20 +546,20 @@ void init_spdm_certificates(void* spdm_context) {
 				responder_public_certificate_chain_hash,
 				responder_public_certificate_chain_hash_size);
 	}
-		zero_mem(&parameter, sizeof(parameter));
-		parameter.location = SPDM_DATA_LOCATION_LOCAL;
-		data8 = m_use_slot_count;
-		spdm_set_data(spdm_context, SPDM_DATA_LOCAL_SLOT_COUNT,
-			      &parameter, &data8, sizeof(data8));
+	zero_mem(&parameter, sizeof(parameter));
+	parameter.location = SPDM_DATA_LOCATION_LOCAL;
+	data8 = m_use_slot_count;
+	spdm_set_data(spdm_context, SPDM_DATA_LOCAL_SLOT_COUNT,
+				&parameter, &data8, sizeof(data8));
 
-		for (index = 0; index < m_use_slot_count; index++) {
-			parameter.additional_data[0] = index;
-			spdm_set_data(spdm_context,
-					SPDM_DATA_LOCAL_PUBLIC_CERT_CHAIN,
-					&parameter,
-					requester_public_certificate_chain_data,
-					requester_public_certificate_chain_size);
-		}
+	for (index = 0; index < m_use_slot_count; index++) {
+		parameter.additional_data[0] = index;
+		spdm_set_data(spdm_context,
+				SPDM_DATA_LOCAL_PUBLIC_CERT_CHAIN,
+				&parameter,
+				requester_public_certificate_chain_data,
+				requester_public_certificate_chain_size);
+	}
 
 	status = spdm_set_data(
 			spdm_context,
@@ -716,6 +717,9 @@ static void send_data(void){
 */
 static void totp_spdm_work_handler(struct work_struct *w) {
 	int tries;
+	bool use_psk;
+	uint8_t heartbeat_period;
+	uint8_t measurement_hash[MAX_HASH_SIZE];
 	bool device_found = false;
 
 	// Maybe in some world it takes longer for the device to be found
@@ -734,35 +738,53 @@ static void totp_spdm_work_handler(struct work_struct *w) {
 		fail();
 	}
 
-	// Initialize SPDM
-	totp_spdm_usb_struct->spdm_context = init_spdm();
-	if (totp_spdm_usb_struct->spdm_context == NULL) {
-		pr_alert("Failed to initialize SPDM context.\n");
-	}
-
-	// get_version, get_capabilities, and negotiate_algorithms
-	totp_spdm_usb_struct->spdm_status = spdm_init_connection(
-			totp_spdm_usb_struct->spdm_context, false);
-	if (RETURN_ERROR(totp_spdm_usb_struct->spdm_status)) {
-		pr_alert("Error on spdm_init_connection: %llX.", totp_spdm_usb_struct->spdm_status);
-		err_free_spdm();
-		fail();
-	} else {
-		pr_info("SPDM Context initialized.");
-	}
-
-	// TODO: add certificates funtion? (virtblk_init_spdm_certificates)
-	// init_spdm_certificates(totp_spdm_usb_struct->spdm_context);
-
 	while(true){
-		msleep(VERIFICATION_PERIOD_MS);
 		// TODO: periodic SPDM checks
 		pr_info("Initializing periodic SPDM checks.");
 
-		// transfer buffer
-		// set_buffer();
+		// Initialize SPDM
+		totp_spdm_usb_struct->spdm_context = init_spdm();
+		if (totp_spdm_usb_struct->spdm_context == NULL) {
+			pr_alert("Failed to initialize SPDM context.\n");
+		}
 
-		// send_data();
+		// get_version, get_capabilities, and negotiate_algorithms
+		totp_spdm_usb_struct->spdm_status = spdm_init_connection(
+				totp_spdm_usb_struct->spdm_context, false);
+		if (RETURN_ERROR(totp_spdm_usb_struct->spdm_status)) {
+			pr_alert("Error on spdm_init_connection: %llX.", totp_spdm_usb_struct->spdm_status);
+			err_free_spdm();
+			fail();
+		} else {
+			pr_info("SPDM Context initialized.");
+		}
+
+		init_spdm_certificates(totp_spdm_usb_struct->spdm_context);
+
+		// other messages
+		totp_spdm_usb_struct->spdm_status = do_authentication_via_spdm(totp_spdm_usb_struct->spdm_context);
+		if (RETURN_ERROR(totp_spdm_usb_struct->spdm_status)) {
+			pr_info("do_authentication_via_spdm - %x", (uint32)totp_spdm_usb_struct->spdm_status);
+			err_free_spdm();
+		} else {
+			pr_info("do_authentication_via_spdm - done");
+		}
+
+		use_psk = FALSE;
+		heartbeat_period = 0;
+		totp_spdm_usb_struct->spdm_status = spdm_start_session(totp_spdm_usb_struct->spdm_context,
+				use_psk,
+				m_use_measurement_summary_hash_type,
+				m_use_slot_id,
+				&totp_spdm_usb_struct->session_id,
+				&heartbeat_period,
+				measurement_hash);
+		if (RETURN_ERROR(totp_spdm_usb_struct->spdm_status)) {
+			pr_info("spdm_start_session - %x", (uint32)totp_spdm_usb_struct->spdm_status);
+			err_free_spdm();
+		}
+
+		msleep(VERIFICATION_PERIOD_MS);
 	}
 }
 
