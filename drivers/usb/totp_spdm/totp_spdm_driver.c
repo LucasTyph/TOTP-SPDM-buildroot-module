@@ -18,24 +18,17 @@
 // Certificates include
 #include "certs.h"
 
-/*
-** This macro is used to tell the driver to use old method or new method.
-** If it is 0, then driver will use old method. ie: __init and __exit
-** If it is non zero, then driver will use new method. ie: module_usb_driver
-*/
-#define IS_NEW_METHOD_USED 1
-#define USB_VENDOR_ID 0x0666
-#define USB_PRODUCT_ID 0x0666
-#define MAX_TRIES 2
-#define TIMEOUT_MS 5000
-#define VERIFICATION_PERIOD_MS 40000
-#define BUFFER_SIZE 64
-#define URB_REQUEST_OFFSET 8
-#define TOTP_TIMESTEP 60
-#define TOTP_HEX_SIZE 6
-#define LEN_HEX_SIZE 4
-#define SPDM_RECEIVE_OFFSET 10     // TOTP_HEX_SIZE + LEN_HEX_SIZE
-#define TOTP_CHALLENGE_ATTEMPTS 3
+#define USB_VENDOR_ID 0x0666			// Vendor ID of the SPDM/TOTP device
+#define USB_PRODUCT_ID 0x0666			// Product ID of the SPDM/TOTP device
+#define MAX_TRIES 2						// Max amount of tries to find SPDM device
+#define TIMEOUT_MS 5000					// Wait time in ms to find SPDM device
+#define VERIFICATION_PERIOD_MS 40000	// Wait time in ms to do SPDM/TOTP checks
+// #define BUFFER_SIZE 64
+#define TOTP_TIMESTEP 60				// Timestep for TOTP checks
+#define TOTP_HEX_SIZE 6					// TOTP header size in bytes
+#define LEN_HEX_SIZE 4					// SPDM length header size in byes
+#define SPDM_RECEIVE_OFFSET 10			// TOTP_HEX_SIZE + LEN_HEX_SIZE
+#define TOTP_CHALLENGE_ATTEMPTS 3		// Max amount of tries to match TOTP
 
 // Work queue handling function definition
 static void totp_spdm_work_handler(struct work_struct *w);
@@ -93,11 +86,18 @@ struct totp_spdm_usb {
 	uint32_t session_id;
 } *totp_spdm_usb_struct;
 
+/*
+* Shut down the system in case something goes wrong.
+*/
 static void fail(void){
-		// shutdown device
-		pr_alert("Shutting down system...\n");
+		char * shutdown_argv[] = { "/sbin/poweroff", NULL };
+
+		pr_alert("Shutting down system in 5...\n");
+		msleep(5000);
 		// uncommment for shutting down the system
+		call_usermodehelper(shutdown_argv[0], shutdown_argv, NULL, UMH_NO_WAIT);
 		// kernel_power_off();
+		kernel_halt();
 }
 
 /*
@@ -155,6 +155,9 @@ static size_t get_size_from_response(void) {
 	return size_dec;
 }
 
+/*
+* Finds whether value val is contained in array arr.
+*/
 static int valueinarray(uint32_t val, uint32_t arr[], uint32_t arr_size) {
 	uint8_t i;
 	for(i = 0; i < arr_size; i++){
@@ -164,6 +167,9 @@ static int valueinarray(uint32_t val, uint32_t arr[], uint32_t arr_size) {
 	return 0;
 }
 
+/*
+* Creates an array of TOTP values and saves them into an array
+*/
 static void get_totp(uint32_t* code_array){
 	int i, diff;
 	struct timespec *ts;
@@ -194,6 +200,12 @@ static void get_totp(uint32_t* code_array){
 	}
 }
 
+/*
+* Checks whether the specified TOTP value is valid or not, by generating
+* TOTP_CHALLENGE_ATTEMPTS TOTP values and chcking whether any of them
+* match the value coming from the device, dev_totp.
+* Returns 1 if true, 0 otherwise.
+*/
 static int totp_challenge(uint32_t dev_totp){
 	uint32_t driver_totp_array[TOTP_CHALLENGE_ATTEMPTS];
 
@@ -206,6 +218,10 @@ static int totp_challenge(uint32_t dev_totp){
 	return 1;
 }
 
+/*
+* Extracts TOTP data from response array (totp_spdm_usb_struct->response_data),
+* and checks whether the result is consistent through totp_challenge.
+*/
 static void verify_totp_from_response(void) {
 	uint8_t totp_hex[TOTP_HEX_SIZE];
 	uint32_t totp_dec;
@@ -286,6 +302,7 @@ static void recv_arbitrary_data(void *data, size_t *size){
 	if (response) {
 		usb_free_urb(in_urb);
 		printk(KERN_INFO "erro %d em usb_submit_urb\n", response);
+		fail();
 	}
 }
 
@@ -370,6 +387,7 @@ static void send_arbitrary_data(uint8_t *data, uint32_t size){
 	if (response) {
 		usb_free_urb(out_urb);
 		printk(KERN_INFO "erro %d em usb_submit_urb\n", response);
+		fail();
 	}
 }
 
@@ -508,6 +526,10 @@ static void* init_spdm(void) {
 #define TEST_PSK_DATA_STRING "TestPskData"
 #define TEST_PSK_HINT_STRING "TestPskHint"
 
+/*
+* Initiates SPDM data related to certificates, that require the connection
+* to be at SPDM_CONNECTION_STATE_NEGOTIATED.
+*/
 void init_spdm_certificates(void* spdm_context) {
 	uint8_t index;
 	return_status status;
@@ -589,6 +611,7 @@ void init_spdm_certificates(void* spdm_context) {
 	
 	if (RETURN_ERROR(status)) {
 		printk("spdm_set_data - %x\n", (uint32)status);
+		fail();
 	}
 
 }
@@ -732,7 +755,9 @@ static void send_data(void){
 */
 
 /*
-* Work queue function called continuously
+* Work queue function.
+* Will work on a separate thread from the very beginning of the
+* driver's life cycle.
 */
 static void totp_spdm_work_handler(struct work_struct *w) {
 	int tries;
@@ -780,11 +805,12 @@ static void totp_spdm_work_handler(struct work_struct *w) {
 
 		init_spdm_certificates(totp_spdm_usb_struct->spdm_context);
 
-		// other messages
+		// GET_DIGEST, GET_CERTIFICATE, CHALLENGE messages
 		totp_spdm_usb_struct->spdm_status = do_authentication_via_spdm(totp_spdm_usb_struct->spdm_context);
 		if (RETURN_ERROR(totp_spdm_usb_struct->spdm_status)) {
 			pr_info("do_authentication_via_spdm - %x", (uint32)totp_spdm_usb_struct->spdm_status);
 			err_free_spdm();
+			fail();
 		} else {
 			pr_info("do_authentication_via_spdm - done");
 		}
@@ -801,14 +827,26 @@ static void totp_spdm_work_handler(struct work_struct *w) {
 		if (RETURN_ERROR(totp_spdm_usb_struct->spdm_status)) {
 			pr_info("spdm_start_session - %x", (uint32)totp_spdm_usb_struct->spdm_status);
 			err_free_spdm();
+			fail();
 		}
 
+		pr_info("session_id: %d", totp_spdm_usb_struct->session_id);
+		pr_info("All SPDM checks realized successfully.");
 		msleep(VERIFICATION_PERIOD_MS);
+		totp_spdm_usb_struct->spdm_status = spdm_stop_session(
+					totp_spdm_usb_struct->spdm_context,
+					totp_spdm_usb_struct->session_id,
+					0);
+		if (RETURN_ERROR(totp_spdm_usb_struct->spdm_status)) {
+			pr_info("spdm_stop_session - %x", (uint32)totp_spdm_usb_struct->spdm_status);
+			err_free_spdm();
+			fail();
+		}
 	}
 }
 
 /*
-** This function will be called when USB device is inserted.
+* This function will be called when USB device is inserted.
 */
 static int usb_totp_spdm_probe (struct usb_interface *interface, const struct usb_device_id *id) {
 	struct usb_endpoint_descriptor *bulk_in, *bulk_out;
@@ -848,23 +886,25 @@ static int usb_totp_spdm_probe (struct usb_interface *interface, const struct us
 }
 
 /*
-** This function will be called when USB device is removed.
+* This function will be called when USB device is removed.
 */
 static void usb_totp_spdm_disconnect (struct usb_interface *interface) {
-	printk (KERN_INFO "usb_totp_spdm_disconnect\n");
+	pr_info("usb_totp_spdm_disconnect\n");
+	fail();
 	dev_info (&interface->dev, "USB Driver Disconnected\n");
 }
  
-//usb_device_id provides a list of different types of USB devices that the driver supports
+/*
+* usb_device_id provides a list of different types of
+* USB devices that the driver supports
+*/
 const struct usb_device_id usb_totp_spdm_table[] = {
 	{USB_DEVICE (USB_VENDOR_ID, USB_PRODUCT_ID)},
 	{} /* Terminating entry */
 };
- 
-//This enable the linux hotplug system to load the driver automatically when the device is plugged in
+
 MODULE_DEVICE_TABLE(usb, usb_totp_spdm_table);
 
-//The structure needs to do is register with the linux subsystem
 static struct usb_driver usb_totp_spdm_driver = {
 	.name       = "TOTP + SPDM USB Driver",
 	.probe      = usb_totp_spdm_probe,
@@ -872,11 +912,12 @@ static struct usb_driver usb_totp_spdm_driver = {
 	.id_table   = usb_totp_spdm_table,
 };
 
-#if (IS_NEW_METHOD_USED == 0)
-//This will replace module_init and module_exit.
-module_usb_driver(usb_totp_spdm_driver);
- 
-#else
+/*
+* Initializing function for the driver.
+* Must create an instance of the driver's global struct, 
+* and also invoke the necessary functions to start up the
+* work handler function.
+*/
 static int __init usb_totp_spdm_init (void) {
 	printk(KERN_INFO "usb_totp_spdm_init\n");
 
@@ -900,7 +941,7 @@ static int __init usb_totp_spdm_init (void) {
 }
  
 static void __exit usb_totp_spdm_exit (void) {
-	printk(KERN_INFO "usb_totp_spdm_exit\n");
+	pr_info("usb_totp_spdm_exit\n");
 
 	// stop totp_spdm_work work queue
 	cancel_work_sync(&totp_spdm_work);
@@ -912,7 +953,6 @@ static void __exit usb_totp_spdm_exit (void) {
  
 module_init(usb_totp_spdm_init);
 module_exit(usb_totp_spdm_exit);
-#endif
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("TOTP + SPDM USB Driver");
