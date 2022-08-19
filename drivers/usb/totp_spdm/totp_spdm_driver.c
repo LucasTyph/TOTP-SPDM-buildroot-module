@@ -24,7 +24,7 @@
 #define USB_PRODUCT_ID 0x0666			// Product ID of the SPDM/TOTP device
 #define MAX_TRIES 2						// Max amount of tries to find SPDM device
 #define TIMEOUT_MS 5000					// Wait time in ms to find SPDM device
-#define VERIFICATION_PERIOD_MS 10000	// Wait time in ms to do SPDM/TOTP checks
+#define VERIFICATION_PERIOD_MS 40000	// Wait time in ms to do SPDM/TOTP checks
 // #define BUFFER_SIZE 64
 #define TOTP_TIMESTEP 60				// Timestep for TOTP checks
 #define TOTP_HEX_SIZE 6					// TOTP header size in bytes
@@ -110,8 +110,8 @@ static void fail(void){
 
 		pr_alert("Shutting down system...\n");
 		// uncommment for shutting down the system
-		//call_usermodehelper(shutdown_argv[0], shutdown_argv, NULL, UMH_NO_WAIT);
-		//kernel_halt();
+		call_usermodehelper(shutdown_argv[0], shutdown_argv, NULL, UMH_NO_WAIT);
+		kernel_halt();
 }
 
 /*
