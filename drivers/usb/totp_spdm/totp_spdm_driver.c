@@ -24,7 +24,7 @@
 #define USB_PRODUCT_ID 0x0666			// Product ID of the SPDM/TOTP device
 #define MAX_TRIES 2						// Max amount of tries to find SPDM device
 #define TIMEOUT_MS 5000					// Wait time in ms to find SPDM device
-#define VERIFICATION_PERIOD_MS 40000	// Wait time in ms to do SPDM/TOTP checks
+#define VERIFICATION_PERIOD_MS 10000	// Wait time in ms to do SPDM/TOTP checks
 // #define BUFFER_SIZE 64
 #define TOTP_TIMESTEP 60				// Timestep for TOTP checks
 #define TOTP_HEX_SIZE 6					// TOTP header size in bytes
@@ -178,6 +178,7 @@ static size_t get_size_from_response(void) {
 	uint8_t size_hex[LEN_HEX_SIZE];
 	unsigned long size_dec;
 
+	// TODO: Might need to adapt something due to the case in which response_size is 60?
 	memcpy(size_hex, totp_spdm_usb_struct->response_data, LEN_HEX_SIZE*sizeof(uint8_t));
 	size_dec = hexdec(size_hex);
 	pr_info ("size_dec: %lu", size_dec);
@@ -257,13 +258,19 @@ static int totp_challenge(uint32_t dev_totp){
 * Callback funciton for receiving messages
 */
 static void recv_arbitrary_data_callback(struct urb *urb){
-	int i;
+	int i, header_size;
 	
 	// Work with received data
 	totp_spdm_usb_struct->response_size = get_size_from_response();
 
+	// Specific case in which we have 60 bytes can cause issues
+	// TODO: There is a non-zero chance that this code dies if response_size
+	// is between 960 and 975 (0x3C0 and 0x3CF)
+	header_size = (totp_spdm_usb_struct->response_size == 60) ? (SPDM_RECEIVE_OFFSET - 1) : SPDM_RECEIVE_OFFSET;
+	pr_info("header_size = %d", header_size);
+
 	memmove (totp_spdm_usb_struct->response_data,
-			totp_spdm_usb_struct->response_data + SPDM_RECEIVE_OFFSET,
+			totp_spdm_usb_struct->response_data + header_size,
 			(totp_spdm_usb_struct->response_size) * sizeof(uint8_t));
 
 	pr_info("totp_spdm_usb_struct->response_data:\n");
