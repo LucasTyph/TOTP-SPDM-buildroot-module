@@ -36,7 +36,6 @@
 #define TOTP_KEY_CHECKS_UNTIL_REGEN 6	// Max amount of TOTP checks before
 										// needing to generate new key
 										// = log2(TOTP_RANDOM_NUM_SIZE*8) -> log2 of total of bits
-// TODO: pensar numa justificativa pra esse 6
 
 // Work queue handling function definition
 static void totp_spdm_work_handler(struct work_struct *w);
@@ -636,144 +635,6 @@ void init_spdm_certificates(void* spdm_context) {
 }
 
 /*
-* URB callback function.
-* Will be called every time an incoming URB request finishes
-*/
-/*
-static void urb_in_callback(struct urb *urb){
-	int i, result;
-	uint32_t totp_dec;
-
-	pr_info("totp_spdm_usb_struct->in_buf: %px\n", totp_spdm_usb_struct->in_buf);
-	for (i = 0; i < (BUFFER_SIZE)/8; i++){
-		pr_info("%02X %02X %02X %02X %02X %02X %02X %02X",
-			totp_spdm_usb_struct->in_buf[8*i+0], totp_spdm_usb_struct->in_buf[8*i+1],
-			totp_spdm_usb_struct->in_buf[8*i+2], totp_spdm_usb_struct->in_buf[8*i+3], 
-			totp_spdm_usb_struct->in_buf[8*i+4], totp_spdm_usb_struct->in_buf[8*i+5],
-			totp_spdm_usb_struct->in_buf[8*i+6], totp_spdm_usb_struct->in_buf[8*i+7]);
-	}
-	pr_info("-----\n");
-
-	// Fetch TOTP code starting from 16th position
-	memcpy(totp_spdm_usb_struct->totp_hex, &(totp_spdm_usb_struct->in_buf)[16], 7*sizeof(char));
-
-	// Transform TOTP hex into unsigned int
-	totp_dec = hexdec(totp_spdm_usb_struct->totp_hex);
-	pr_info("totp_dec: %u\n", totp_dec);
-
-	// Check TOTP consistency
-	result = totp_challenge(totp_dec);
-	if (!result){
-		pr_alert("TOTP %u did not match the device's challenge.", totp_dec);
-		fail();
-	}
-
-	// Set URBs as inactive
-	spin_lock(&usb_spinlock);
-	totp_spdm_usb_struct->out_urb_is_active = false;
-	totp_spdm_usb_struct->in_urb_is_active = false;
-	spin_unlock(&usb_spinlock);
-
-	// Free URBs
-	usb_free_urb(totp_spdm_usb_struct->out_urb);
-	usb_free_urb(totp_spdm_usb_struct->in_urb);
-	kfree(totp_spdm_usb_struct->in_buf);
-	kfree(totp_spdm_usb_struct->buf);
-}
-*/
-
-/*
-* URB callback function.
-* Will be called every time an outgoing URB request finishes.
-* Also sends another URB, which gathers the device's response.
-*/
-/*
-static void urb_out_callback(struct urb *urb){
-	int response;
-
-	// Set URB as active
-	spin_lock(&usb_spinlock);
-	totp_spdm_usb_struct->in_urb_is_active = true;
-	spin_unlock(&usb_spinlock);
-
-	// allocate memory in totp_spdm_usb struct's input buffer and URB
-	// these will be used to get the device's response
-	totp_spdm_usb_struct->in_buf = kmalloc(totp_spdm_usb_struct->buf_size, GFP_ATOMIC);
-	totp_spdm_usb_struct->in_urb = usb_alloc_urb(0, GFP_ATOMIC);
-	totp_spdm_usb_struct->in_buf_size = BUFFER_SIZE;
-
-	// fill URB with necessary info
-	usb_fill_bulk_urb(
-		totp_spdm_usb_struct->in_urb,		// URB pointer
-		totp_spdm_usb_struct->dev,			// relevant usb_device
-		usb_rcvbulkpipe(					// receiving bulk pipe
-			totp_spdm_usb_struct->dev,
-			totp_spdm_usb_struct->in_endpoint_addr & USB_ENDPOINT_NUMBER_MASK),
-		totp_spdm_usb_struct->in_buf,		// buffer
-		totp_spdm_usb_struct->in_buf_size,	// buffer size
-		urb_in_callback,					// callback funciton
-		totp_spdm_usb_struct				// context (?)
-	);
-	response = usb_submit_urb(totp_spdm_usb_struct->in_urb, GFP_ATOMIC);
-	if (response) {
-		usb_free_urb(totp_spdm_usb_struct->in_urb);
-		printk(KERN_INFO "erro %d em usb_submit_urb\n", response);
-	}
-}
-*/
-
-/*
-* Temporary function to set buffer and buffer size
-*/
-/*
-static void set_buffer(void){
-	uint8_t data[BUFFER_SIZE] = {[0] = 0, [1] = 1, [2] = 2, [9] = 9, [10] = 10};
-	//01 02 03 00 00 00 00 00 00 09 0A 00 00
-
-	totp_spdm_usb_struct->buf_size = BUFFER_SIZE;
-	totp_spdm_usb_struct->buf = kmalloc(totp_spdm_usb_struct->buf_size, GFP_KERNEL);
-	memcpy(totp_spdm_usb_struct->buf, data, BUFFER_SIZE);
-}
-*/
-
-/*
-* Main function to send data through an URB to relevant USB device
-*/
-/*
-static void send_data(void){
-	int response;
-
-	// Set URB as active
-	spin_lock(&usb_spinlock);
-	totp_spdm_usb_struct->out_urb_is_active = true;
-	spin_unlock(&usb_spinlock);
-
-	// allocate URB
-	totp_spdm_usb_struct->out_urb = usb_alloc_urb(0, GFP_KERNEL);
-
-	// fill URB with necessary info
-	usb_fill_bulk_urb(
-		totp_spdm_usb_struct->out_urb,		// URB pointer
-		totp_spdm_usb_struct->dev,			// relevant usb_device
-		usb_sndbulkpipe(					// bulk pipe
-			totp_spdm_usb_struct->dev,
-			totp_spdm_usb_struct->out_endpoint_addr),
-		totp_spdm_usb_struct->buf,			// buffer
-		totp_spdm_usb_struct->buf_size,		// buffer size
-		urb_out_callback,					// callback funciton
-		totp_spdm_usb_struct				// context (?)
-	);
-
-	// submit urb
-	response = usb_submit_urb(totp_spdm_usb_struct->out_urb, GFP_KERNEL);
-	if (response) {
-		usb_free_urb(totp_spdm_usb_struct->out_urb);
-		printk(KERN_INFO "erro %d em usb_submit_urb\n", response);
-	}
-}
-*/
-
-/*
 * Checks whether the obtained TOTP code is consistent through totp_challenge.
 */
 static void verify_totp(uint8_t *totp_from_response) {
@@ -925,17 +786,6 @@ static void totp_spdm_work_handler(struct work_struct *w) {
 				memcpy(totp_spdm_usb_struct->totp_key,
 						send_receive_local_response_buf + 1,
 						totp_spdm_usb_struct->totp_key_size);
-				
-				// TODO: remove prints
-				pr_info("totp_key:");
-				for (i = 0; i < totp_spdm_usb_struct->totp_key_size; i++){
-					if ((i+1)%8 != 0){
-						pr_cont("%02X ", ((uint8_t *)(totp_spdm_usb_struct->totp_key))[i]);
-					}
-					else {
-						pr_info("%02X ", ((uint8_t *)(totp_spdm_usb_struct->totp_key))[i]);
-					}
-				}
 
 				// Final check to see if the loop will be done again
 				pr_info("TOTP key size: %llu", totp_spdm_usb_struct->totp_key_size);
