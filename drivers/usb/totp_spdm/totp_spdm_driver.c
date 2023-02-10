@@ -651,12 +651,50 @@ static void verify_totp(uint8_t *totp_from_response) {
 
 	// Check TOTP consistency
 	result = totp_challenge(totp_dec);
+	pr_info("result: %d\n", result);
 	if (!result){
 		pr_alert("TOTP %u did not match the expected value.", totp_dec);
 		fail();
 	}
 	else {
 		pr_alert("TOTP %u matches the expected value.", totp_dec);
+		pr_info("TOTP %u matches the expected value.", totp_dec);
+	}
+}
+
+static void receive_totp_code_callback(struct urb *urb){
+	verify_totp(totp_spdm_usb_struct->response_data);
+}
+
+static void receive_totp_code(uint8_t* data, uint32_t size){
+	int response;
+	struct urb *in_urb;
+
+	// Setting the response array to the maximum possible size initially
+	totp_spdm_usb_struct->response_data = kmalloc(4608, GFP_DMA);
+
+	// Allocate URB
+	in_urb = usb_alloc_urb(0, GFP_KERNEL);
+
+	// Fill URB with necessary info
+	usb_fill_bulk_urb(
+		in_urb,
+		totp_spdm_usb_struct->dev,
+		usb_rcvbulkpipe(
+			totp_spdm_usb_struct->dev,
+			totp_spdm_usb_struct->in_endpoint_addr),
+		totp_spdm_usb_struct->response_data,
+		size,
+		receive_totp_code_callback,
+		totp_spdm_usb_struct
+	);
+
+	// Submit urb
+	response = usb_submit_urb(in_urb, GFP_KERNEL);
+	if (response) {
+		usb_free_urb(in_urb);
+		printk(KERN_INFO "erro %d em usb_submit_urb\n", response);
+		fail();
 	}
 }
 
@@ -743,85 +781,85 @@ static void totp_spdm_work_handler(struct work_struct *w) {
 
 	pr_info("session_id: %d", totp_spdm_usb_struct->session_id);
 
-	while(true){
-		pr_info("Initializing periodic SPDM checks.");
+	do {
+		pr_info("Generating TOTP key.");
+		// To avoid checks in the first message exchange,
+		// set totp_key to 0 for now
+		memset(totp_spdm_usb_struct->totp_key, 0, TOTP_KEY_SIZE);
 
-		// Begin creation of new TOTP key periodically
-		if (totp_spdm_usb_struct->totp_checks <= 0){
-			do {
-				pr_info("Generating TOTP key.");
-				// To avoid checks in the first message exchange,
-				// set totp_key to 0 for now
-				memset(totp_spdm_usb_struct->totp_key, 0, TOTP_KEY_SIZE);
+		// Create a random number
+		get_random_bytes(
+				&(totp_spdm_usb_struct->random_local_num),
+				sizeof(totp_spdm_usb_struct->random_local_num));
 
-				// Create a random number
-				get_random_bytes(
-						&(totp_spdm_usb_struct->random_local_num),
-						sizeof(totp_spdm_usb_struct->random_local_num));
-
-				// Set first byte as MCTP_MESSAGE_TYPE_VENDOR_DEFINED_IANA
-				totp_spdm_usb_struct->spdm_random_num_data_buf[0] =
-						MCTP_MESSAGE_TYPE_VENDOR_DEFINED_IANA;
-				memcpy(totp_spdm_usb_struct->spdm_random_num_data_buf + 1,
-						&totp_spdm_usb_struct->random_local_num,
-						sizeof(totp_spdm_usb_struct->random_local_num));
-				
-				// Initialize totp_key_size with maximum buffer length
-				totp_spdm_usb_struct->totp_key_size = TOTP_KEY_SIZE + 1;
-
-				// Send vendor defined request with random number
-				spdm_send_receive_data(
-						totp_spdm_usb_struct->spdm_context,							// SPDM context
-						&totp_spdm_usb_struct->session_id,							// Session ID
-						FALSE,														// ???
-						&totp_spdm_usb_struct->spdm_random_num_data_buf,			// Local data
-						sizeof(totp_spdm_usb_struct->spdm_random_num_data_buf),	// Local data size
-						&send_receive_local_response_buf,							// Key received as response
-						&totp_spdm_usb_struct->totp_key_size);						// Key size
-
-				// Remove one byte from totp_key_size (SPDM flag)
-				totp_spdm_usb_struct->totp_key_size -= 1;
-
-				// Copy response buffer to totp_key
-				memcpy(totp_spdm_usb_struct->totp_key,
-						send_receive_local_response_buf + 1,
-						totp_spdm_usb_struct->totp_key_size);
-
-				// Final check to see if the loop will be done again
-				pr_info("TOTP key size: %llu", totp_spdm_usb_struct->totp_key_size);
-			} while (totp_spdm_usb_struct->totp_key_size != TOTP_KEY_SIZE);
-
-			// Set totp_checks as max number of key checks again
-			totp_spdm_usb_struct->totp_checks = TOTP_KEY_CHECKS_UNTIL_REGEN;
-		}
-
-		// Begin TOTP check
 		// Set first byte as MCTP_MESSAGE_TYPE_VENDOR_DEFINED_IANA
-		totp_spdm_usb_struct->spdm_totp_check_data_buf[0] =
+		totp_spdm_usb_struct->spdm_random_num_data_buf[0] =
 				MCTP_MESSAGE_TYPE_VENDOR_DEFINED_IANA;
-
-		// Initialize maximum TOTP size with maximum buffer length
-		totp_spdm_usb_struct->totp_size = TOTP_HEX_SIZE + 1;
+		memcpy(totp_spdm_usb_struct->spdm_random_num_data_buf + 1,
+				&totp_spdm_usb_struct->random_local_num,
+				sizeof(totp_spdm_usb_struct->random_local_num));
+		
+		// Initialize totp_key_size with maximum buffer length
+		totp_spdm_usb_struct->totp_key_size = TOTP_KEY_SIZE + 1;
 
 		// Send vendor defined request with random number
 		spdm_send_receive_data(
-				totp_spdm_usb_struct->spdm_context,						// SPDM context
-				&totp_spdm_usb_struct->session_id,						// Session ID
-				FALSE,													// ???
-				&totp_spdm_usb_struct->spdm_totp_check_data_buf,		// Local data
-				sizeof(totp_spdm_usb_struct->spdm_totp_check_data_buf),	// Local data size (not sending any data)
-				&totp_response,											// TOTP code received
-				&totp_spdm_usb_struct->totp_size);						// TOTP code size
+				totp_spdm_usb_struct->spdm_context,							// SPDM context
+				&totp_spdm_usb_struct->session_id,							// Session ID
+				FALSE,														// ???
+				&totp_spdm_usb_struct->spdm_random_num_data_buf,			// Local data
+				sizeof(totp_spdm_usb_struct->spdm_random_num_data_buf),	// Local data size
+				&send_receive_local_response_buf,							// Key received as response
+				&totp_spdm_usb_struct->totp_key_size);						// Key size
 
-		// Verify TOTP from response
-		verify_totp(totp_response + 1);
+		// Remove one byte from totp_key_size (SPDM flag)
+		totp_spdm_usb_struct->totp_key_size -= 1;
 
-		pr_info("All SPDM checks realized successfully.");
+		// Copy response buffer to totp_key
+		memcpy(totp_spdm_usb_struct->totp_key,
+				send_receive_local_response_buf + 1,
+				totp_spdm_usb_struct->totp_key_size);
 
-		// totp_checks -= 1 to bring it closer to regenerating the key
-		totp_spdm_usb_struct->totp_checks--;
+		// Final check to see if the loop will be done again
+		pr_info("TOTP key size: %llu", totp_spdm_usb_struct->totp_key_size);
+	} while (totp_spdm_usb_struct->totp_key_size != TOTP_KEY_SIZE);
+
+	// End SPDM session
+
+
+	pr_info("Initializing periodic SPDM checks.");
+	while(true){
+		receive_totp_code(totp_response, TOTP_HEX_SIZE);
 		msleep(VERIFICATION_PERIOD_MS);
-	}
+	}	
+/*
+	// Begin TOTP check
+	// Set first byte as MCTP_MESSAGE_TYPE_VENDOR_DEFINED_IANA
+	totp_spdm_usb_struct->spdm_totp_check_data_buf[0] =
+			MCTP_MESSAGE_TYPE_VENDOR_DEFINED_IANA;
+
+	// Initialize maximum TOTP size with maximum buffer length
+	totp_spdm_usb_struct->totp_size = TOTP_HEX_SIZE + 1;
+
+	// Send vendor defined request with random number
+	spdm_send_receive_data(
+			totp_spdm_usb_struct->spdm_context,						// SPDM context
+			&totp_spdm_usb_struct->session_id,						// Session ID
+			FALSE,													// ???
+			&totp_spdm_usb_struct->spdm_totp_check_data_buf,		// Local data
+			sizeof(totp_spdm_usb_struct->spdm_totp_check_data_buf),	// Local data size (not sending any data)
+			&totp_response,											// TOTP code received
+			&totp_spdm_usb_struct->totp_size);						// TOTP code size
+
+	// Verify TOTP from response
+	verify_totp(totp_response + 1);
+
+	pr_info("All SPDM checks realized successfully.");
+
+	// totp_checks -= 1 to bring it closer to regenerating the key
+	totp_spdm_usb_struct->totp_checks--;
+	msleep(VERIFICATION_PERIOD_MS);
+*/
 }
 
 /*

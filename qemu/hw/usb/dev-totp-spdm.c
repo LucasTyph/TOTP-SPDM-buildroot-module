@@ -67,6 +67,8 @@ static uint32_t spdm_buf_size;
 static int spdm_send_is_ready;
 static int spdm_receive_is_ready;
 static uint8_t totp_key[SPDM_SHA_SIZE]; // 8 bytes
+static bool current_spdm_receive_message;
+static bool next_message_totp_check;
 
 /* 
 * Global SPDM device options
@@ -734,6 +736,7 @@ static return_status spdm_device_get_response(
         // copy TOTP key to response after the first byte
         memcpy(response + 1, &temp_totp_key, SPDM_SHA_SIZE);
         *response_size = SPDM_SHA_SIZE + 1;
+        next_message_totp_check = true;
     }
     return RETURN_SUCCESS;
 }
@@ -793,6 +796,8 @@ static return_status spdm_device_receive_message(
     }
 
     qemu_mutex_lock(&spdm_io_mutex);
+    current_spdm_receive_message = true;
+    next_message_totp_check = false;
     *response_size = spdm_buf_size;
     memcpy(response, spdm_buf, *response_size);
     qemu_mutex_unlock(&spdm_io_mutex);
@@ -974,90 +979,111 @@ static void usb_totp_spdm_handle_data(USBDevice *dev, USBPacket *p)
     // dados chegando no driver
     case USB_TOKEN_IN:      // PID 105
         USB_SPDM_PRINT("USB_TOKEN_IN\n");
-        char new_header[SPDM_SEND_OFFSET];
+        if (current_spdm_receive_message){
+            char new_header[SPDM_SEND_OFFSET];
 
-        qemu_mutex_lock(&spdm_io_mutex);
-        if (!spdm_send_is_ready) {
-            qemu_cond_wait(&spdm_io_cond, &spdm_io_mutex);
-        }
-
-        // First transfer
-        if (s->current_transfer_size_in == 0){
-            first = true;
-            USB_SPDM_PRINT("USB_TOKEN_IN - first transfer\n");
-            // add length to first positions of spdm_buf
-            char len_str[LEN_HEX_SIZE];
-            sprintf(len_str, "%x", spdm_buf_size);
-
-            // If it's 64 bytes, it breaks, so do this
-            int headersize = (spdm_buf_size == 60) ? (LEN_HEX_SIZE - 1)*sizeof(char) : LEN_HEX_SIZE*sizeof(char);
-            memcpy(&(new_header)[0], len_str, headersize);
-
-            // Copy header to packet
-            usb_packet_copy(p, new_header, headersize);
-        }
-        else {
-            first = false;
-            USB_SPDM_PRINT("USB_TOKEN_IN - not the first transfer\n");
-            int extra_header_len = (spdm_buf_size == 60) ? (SPDM_SEND_OFFSET - 1) : SPDM_SEND_OFFSET;
-            extra_len = MIN(spdm_buf_size - s->current_transfer_size_in, extra_header_len);
-
-            // Copy spare data from extra_buffer_in
-            usb_packet_copy(p, s->extra_buffer_in, extra_len);
-            s->current_transfer_size_in += extra_len;
-        }
-
-        // len is the minimum value between the remainig data to be transfered
-        // (spdm_buf_size - s->current_transfer_size_in) and the
-        // max size subtracted by the original header, SPDM_SEND_OFFSET
-        int iov_with_header = (spdm_buf_size == 60) ? (p->iov.size - (SPDM_SEND_OFFSET - 1)) : p->iov.size - SPDM_SEND_OFFSET;
-        len = MIN(spdm_buf_size - s->current_transfer_size_in, iov_with_header);
-        USB_SPDM_PRINT("len: %u\n", len);
-        USB_SPDM_PRINT("spdm_buf_size: %u\n", spdm_buf_size);
-        USB_SPDM_PRINT("s->current_transfer_size_in: %u\n", s->current_transfer_size_in);
-
-        // Copy spdm_buf to packet, right after new_header
-        usb_packet_copy(p, spdm_buf + s->current_transfer_size_in, len);
-        s->current_transfer_size_in += len;
-
-        // Not the last transfer
-        if (s->current_transfer_size_in < spdm_buf_size) {
-            last = false;
-            USB_SPDM_PRINT("USB_TOKEN_IN - not the final transfer\n");
-            // Copy spare data to extra_buffer_in
-            memcpy(s->extra_buffer_in,
-                    spdm_buf + s->current_transfer_size_in,
-                    MIN(spdm_buf_size - s->current_transfer_size_in, SPDM_SEND_OFFSET));
-        }
-        // Final transfer
-        else {
-            last = true;
-            // If it is the last transfer of a combined one,
-            // add back the original header size
-            if (!first){
-                usb_packet_copy(p, spdm_buf + s->current_transfer_size_in - SPDM_SEND_OFFSET, SPDM_SEND_OFFSET);
+            qemu_mutex_lock(&spdm_io_mutex);
+            if (!spdm_send_is_ready) {
+                qemu_cond_wait(&spdm_io_cond, &spdm_io_mutex);
             }
-            USB_SPDM_PRINT("USB_TOKEN_IN - final transfer\n");
-            s->current_transfer_size_in = 0;
-            spdm_send_is_ready = 0;
-            USB_SPDM_PRINT("spdm_send_is_ready = 0\n");
-        }
 
-#if USB_SPDM_DEBUG
-        printf("iov final: \n");
-        for (i = 0; i < p->iov.size; i++){
-            printf("%02X ", ((uint8_t *)p->iov.iov->iov_base)[i]);
-            if ((i+1)%8 == 0){
+            // First transfer
+            if (s->current_transfer_size_in == 0){
+                first = true;
+                USB_SPDM_PRINT("USB_TOKEN_IN - first transfer\n");
+                // add length to first positions of spdm_buf
+                char len_str[LEN_HEX_SIZE];
+                sprintf(len_str, "%x", spdm_buf_size);
+
+                // If it's 64 bytes, it breaks, so do this
+                int headersize = (spdm_buf_size == 60) ? (LEN_HEX_SIZE - 1)*sizeof(char) : LEN_HEX_SIZE*sizeof(char);
+                memcpy(&(new_header)[0], len_str, headersize);
+
+                // Copy header to packet
+                usb_packet_copy(p, new_header, headersize);
+            }
+            else {
+                first = false;
+                USB_SPDM_PRINT("USB_TOKEN_IN - not the first transfer\n");
+                int extra_header_len = (spdm_buf_size == 60) ? (SPDM_SEND_OFFSET - 1) : SPDM_SEND_OFFSET;
+                extra_len = MIN(spdm_buf_size - s->current_transfer_size_in, extra_header_len);
+
+                // Copy spare data from extra_buffer_in
+                usb_packet_copy(p, s->extra_buffer_in, extra_len);
+                s->current_transfer_size_in += extra_len;
+            }
+
+            // len is the minimum value between the remainig data to be transfered
+            // (spdm_buf_size - s->current_transfer_size_in) and the
+            // max size subtracted by the original header, SPDM_SEND_OFFSET
+            int iov_with_header = (spdm_buf_size == 60) ? (p->iov.size - (SPDM_SEND_OFFSET - 1)) : p->iov.size - SPDM_SEND_OFFSET;
+            len = MIN(spdm_buf_size - s->current_transfer_size_in, iov_with_header);
+            USB_SPDM_PRINT("len: %u\n", len);
+            USB_SPDM_PRINT("spdm_buf_size: %u\n", spdm_buf_size);
+            USB_SPDM_PRINT("s->current_transfer_size_in: %u\n", s->current_transfer_size_in);
+
+            // Copy spdm_buf to packet, right after new_header
+            usb_packet_copy(p, spdm_buf + s->current_transfer_size_in, len);
+            s->current_transfer_size_in += len;
+
+            // Not the last transfer
+            if (s->current_transfer_size_in < spdm_buf_size) {
+                last = false;
+                USB_SPDM_PRINT("USB_TOKEN_IN - not the final transfer\n");
+                // Copy spare data to extra_buffer_in
+                memcpy(s->extra_buffer_in,
+                        spdm_buf + s->current_transfer_size_in,
+                        MIN(spdm_buf_size - s->current_transfer_size_in, SPDM_SEND_OFFSET));
+            }
+            // Final transfer
+            else {
+                last = true;
+                // If it is the last transfer of a combined one,
+                // add back the original header size
+                if (!first){
+                    usb_packet_copy(p, spdm_buf + s->current_transfer_size_in - SPDM_SEND_OFFSET, SPDM_SEND_OFFSET);
+                }
+                USB_SPDM_PRINT("USB_TOKEN_IN - final transfer\n");
+                s->current_transfer_size_in = 0;
+                spdm_send_is_ready = 0;
+                USB_SPDM_PRINT("spdm_send_is_ready = 0\n");
+                if (next_message_totp_check){
+                    current_spdm_receive_message = false;
+                }
+            }
+
+    #if USB_SPDM_DEBUG
+            printf("iov final: \n");
+            for (i = 0; i < p->iov.size; i++){
+                printf("%02X ", ((uint8_t *)p->iov.iov->iov_base)[i]);
+                if ((i+1)%8 == 0){
+                    printf("\n");
+                }
+            }
+            if (i%8 != 0){
                 printf("\n");
             }
-        }
-        if (i%8 != 0){
-            printf("\n");
-        }
-#endif
+    #endif
 
-        qemu_mutex_unlock(&spdm_io_mutex);
-        USB_SPDM_PRINT("USB_TOKEN_IN END\n");
+            qemu_mutex_unlock(&spdm_io_mutex);
+            USB_SPDM_PRINT("USB_TOKEN_IN END\n");
+        }
+        // TOTP message without SPDM
+        else{
+            USB_SPDM_PRINT("Periodic TOTP check\n");
+            char totp_str[TOTP_HEX_SIZE];   // max TOTP size is 5 hex
+            uint32_t totp_code;
+
+            totp_code = get_totp();
+            USB_SPDM_PRINT("totp_code: %d\n", totp_code);
+            
+            // To add data to the packet vector, convert it to hex
+            // with sprintf
+            sprintf(totp_str, "%x", totp_code);
+
+            // Copy TOTP value to response
+            usb_packet_copy(p, totp_str, TOTP_HEX_SIZE);
+        }
         break;
     
     default:
