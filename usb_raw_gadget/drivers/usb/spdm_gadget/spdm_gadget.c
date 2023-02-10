@@ -25,6 +25,19 @@
 #include <linux/hid.h>
 #include <linux/usb/ch9.h>
 
+// SPDM includes
+// #pragma GCC diagnostic ignored "-Wundef"
+#include <base.h>
+#include <library/memlib.h>
+#include <library/spdm_common_lib.h>
+#include <library/spdm_responder_lib.h>
+#include <library/spdm_transport_mctp_lib.h>
+#include "spdm_common_lib_internal.h"
+#include "spdm_device_secret_lib_internal.h"
+#include <../library/spdm_secured_message_lib/spdm_secured_message_lib_internal.h>
+#include "mctp.h"
+// #pragma GCC diagnostic pop
+
 /*----------------------------------------------------------------------*/
 
 struct hid_class_descriptor {
