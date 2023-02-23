@@ -31,7 +31,7 @@
 #define LEN_HEX_SIZE 4					// SPDM length header size in byes
 #define SPDM_RECEIVE_OFFSET 4			// = LEN_HEX_SIZE
 #define TOTP_CHALLENGE_ATTEMPTS 3		// Max amount of tries to match TOTP
-#define TOTP_RANDOM_NUM_SIZE 8			// Size of TOTP random number for key generation in bytes
+#define TOTP_RANDOM_NUM_SIZE 16			// Size of TOTP random number for key generation in bytes
 #define TOTP_KEY_SIZE 48				// Size of TOTP key in bytes (using SPDM's SHA384)
 #define TOTP_KEY_CHECKS_UNTIL_REGEN 6	// Max amount of TOTP checks before
 										// needing to generate new key
