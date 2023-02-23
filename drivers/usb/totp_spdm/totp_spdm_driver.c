@@ -781,6 +781,19 @@ static void totp_spdm_work_handler(struct work_struct *w) {
 
 	pr_info("session_id: %d", totp_spdm_usb_struct->session_id);
 
+	while (true){
+		totp_spdm_usb_struct->spdm_status = spdm_heartbeat (
+			totp_spdm_usb_struct->spdm_context,
+			totp_spdm_usb_struct->session_id);
+		if (RETURN_ERROR(totp_spdm_usb_struct->spdm_status)) {
+			pr_info("spdm_heartbeat error - status %x", (uint32)totp_spdm_usb_struct->spdm_status);
+			err_free_spdm();
+			fail();
+		}
+
+		msleep(VERIFICATION_PERIOD_MS);
+	}
+/*
 	do {
 		pr_info("Generating TOTP key.");
 		// To avoid checks in the first message exchange,
@@ -825,13 +838,14 @@ static void totp_spdm_work_handler(struct work_struct *w) {
 	} while (totp_spdm_usb_struct->totp_key_size != TOTP_KEY_SIZE);
 
 	// End SPDM session
-
-
+*/
+/*
 	pr_info("Initializing periodic SPDM checks.");
 	while(true){
 		receive_totp_code(totp_response, TOTP_HEX_SIZE);
 		msleep(VERIFICATION_PERIOD_MS);
-	}	
+	}
+*/
 /*
 	// Begin TOTP check
 	// Set first byte as MCTP_MESSAGE_TYPE_VENDOR_DEFINED_IANA
