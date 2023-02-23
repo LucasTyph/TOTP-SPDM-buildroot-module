@@ -26,7 +26,7 @@
 #define TIMEOUT_MS 5000					// Wait time in ms to find SPDM device
 #define VERIFICATION_PERIOD_MS 40000	// Wait time in ms to do SPDM/TOTP checks
 // #define BUFFER_SIZE 64
-#define TOTP_TIMESTEP 60				// Timestep for TOTP checks
+#define TOTP_TIMESTEP 30				// Timestep for TOTP checks
 #define TOTP_HEX_SIZE 6					// TOTP header size in bytes
 #define LEN_HEX_SIZE 4					// SPDM length header size in byes
 #define SPDM_RECEIVE_OFFSET 4			// = LEN_HEX_SIZE

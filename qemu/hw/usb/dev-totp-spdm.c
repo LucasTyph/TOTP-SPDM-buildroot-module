@@ -512,7 +512,7 @@ static uint32_t get_totp(void){
         printf("%02X ", totp_key[i]);
     }
     printf("\n");
-    TOTP(totp_key, SPDM_SHA_SIZE, 60); // key, key size, timestep in s
+    TOTP(totp_key, SPDM_SHA_SIZE, 30); // key, key size, timestep in s
 
     return getCodeFromTimestamp((unsigned)time(NULL));
 }
