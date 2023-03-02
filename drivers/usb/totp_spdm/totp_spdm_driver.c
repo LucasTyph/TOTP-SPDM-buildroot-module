@@ -9,6 +9,7 @@
 #include <linux/time.h>
 #include <linux/completion.h>
 #include <linux/random.h>
+#include <linux/perf_event.h>
 
 // SPDM includes
 #include "spdm_auth.c"
@@ -181,7 +182,6 @@ static size_t get_size_from_response(void) {
 	// TODO: Might need to adapt something due to the case in which response_size is 60?
 	memcpy(size_hex, totp_spdm_usb_struct->response_data, LEN_HEX_SIZE*sizeof(uint8_t));
 	size_dec = hexdec(size_hex);
-	pr_info ("size_dec: %lu", size_dec);
 	return size_dec;
 }
 
@@ -205,15 +205,6 @@ static void get_totp(uint32_t* code_array){
 	struct timespec *ts;
 	uint32_t steps;
 
-	pr_info("totp_key: \n");
-	for (i = 0; i < totp_spdm_usb_struct->totp_key_size; i++){
-		if ((i+1)%8 != 0){
-			pr_cont("%02X ", ((uint8_t *)(totp_spdm_usb_struct->totp_key))[i]);
-		}
-		else {
-			pr_info("%02X ", ((uint8_t *)(totp_spdm_usb_struct->totp_key))[i]);
-		}
-	}
 	TOTP(totp_spdm_usb_struct->totp_key, (uint8_t)totp_spdm_usb_struct->totp_key_size, TOTP_TIMESTEP); // key, key size, timestep in s
 
 	// Get current time
@@ -231,7 +222,6 @@ static void get_totp(uint32_t* code_array){
 	diff = TOTP_CHALLENGE_ATTEMPTS / 2;
 	for(i = 0; i < TOTP_CHALLENGE_ATTEMPTS; i++){
 		code_array[i] = getCodeFromSteps(steps - diff);
-		pr_info("Generated TOTP %u with steps %u", code_array[i], steps - diff);
 		diff--;
 	}
 }
@@ -267,25 +257,13 @@ static void recv_arbitrary_data_callback(struct urb *urb){
 	// TODO: There is a non-zero chance that this code dies if response_size
 	// is between 960 and 975 (0x3C0 and 0x3CF)
 	header_size = (totp_spdm_usb_struct->response_size == 60) ? (SPDM_RECEIVE_OFFSET - 1) : SPDM_RECEIVE_OFFSET;
-	pr_info("header_size = %d", header_size);
 
 	memmove (totp_spdm_usb_struct->response_data,
 			totp_spdm_usb_struct->response_data + header_size,
 			(totp_spdm_usb_struct->response_size) * sizeof(uint8_t));
 
-	pr_info("totp_spdm_usb_struct->response_data:\n");
-	for (i = 0; i < totp_spdm_usb_struct->response_size; i++){
-		if ((i+1)%8 != 0){
-			pr_cont("%02X ", ((uint8_t *)(totp_spdm_usb_struct->response_data))[i]);
-		}
-		else {
-			pr_info("%02X ", ((uint8_t *)(totp_spdm_usb_struct->response_data))[i]);
-		}
-	}
-
 	if (!completion_done (&totp_spdm_usb_struct->spdm_response_done)){
 		complete (&totp_spdm_usb_struct->spdm_response_done);
-		pr_info("spdm_response_done completed");
 	}
 
 	// Free URB
@@ -340,7 +318,6 @@ static return_status spdm_usb_receive_message(
 	// Setting the response array to the maximum possible size initially
 	totp_spdm_usb_struct->response_data = kmalloc(4608, GFP_DMA);
 	totp_spdm_usb_struct->response_size = *response_size;
-	pr_info("original size: %llu\n", *response_size);
 	recv_arbitrary_data(totp_spdm_usb_struct->response_data, &(totp_spdm_usb_struct->response_size));
 
 	// Code must (not) continue until the response is completed.
@@ -350,17 +327,6 @@ static return_status spdm_usb_receive_message(
 
 	*response_size = totp_spdm_usb_struct->response_size;
 	memcpy(response, totp_spdm_usb_struct->response_data, totp_spdm_usb_struct->response_size);
-	pr_info("Received SPDM response with size %llu\n", *response_size);
-	
-	pr_info("SPDM response:\n");
-	for (i = 0; i < *response_size; i++){
-		if ((i+1)%8 != 0){
-			pr_cont("%02X ", ((uint8_t *)response)[i]);
-		}
-		else {
-			pr_info("%02X ", ((uint8_t *)response)[i]);
-		}
-	}
 	return RETURN_SUCCESS;
 }
 
@@ -370,7 +336,6 @@ static return_status spdm_usb_receive_message(
 static void send_arbitrary_data_callback(struct urb *urb){
 	if (!completion_done (&totp_spdm_usb_struct->spdm_request_sent)){
 		complete (&totp_spdm_usb_struct->spdm_request_sent);
-		pr_info("spdm_request_sent completed");
 	}
 
 	// Free URB
@@ -419,7 +384,6 @@ static return_status spdm_usb_send_message(
 			IN uint64 timeout) {
 	void *request_with_length_header;
 	char len_str[LEN_HEX_SIZE];
-	pr_info("Sending SPDM request with size %llu\n", request_size);
 	init_completion(&totp_spdm_usb_struct->spdm_request_sent);
 
 	// Add 4 bytes of length to first positions of request buffer
@@ -446,7 +410,7 @@ static void* init_spdm(void) {
 	spdm_data_parameter_t parameter;
 	spdm_version_number_t spdm_version;
 
-	pr_info("spdm_context size: 0x%x\n", (uint32_t)spdm_get_context_size());
+	// pr_info("spdm_context size: 0x%x\n", (uint32_t)spdm_get_context_size());
 	spdm_context = (void *)kmalloc(spdm_get_context_size(), GFP_KERNEL);
 	if (spdm_context == NULL) {
 		pr_alert("Failed to initialize SPDM context.\n");
@@ -557,7 +521,6 @@ void init_spdm_certificates(void* spdm_context) {
 	uint16_t data16;
 	uint32_t data32;
 
-	pr_info("init_spdm_certificates\n");
 	zero_mem(&parameter, sizeof(parameter));
 	parameter.location = SPDM_DATA_LOCATION_CONNECTION;
 
@@ -647,18 +610,17 @@ static void verify_totp(uint8_t *totp_from_response) {
 
 	// Transform TOTP hex into unsigned int
 	totp_dec = hexdec(totp_hex);
-	pr_info("totp_dec: %u\n", totp_dec);
+	// pr_info("totp_dec: %u\n", totp_dec);
 
 	// Check TOTP consistency
 	result = totp_challenge(totp_dec);
-	pr_info("result: %d\n", result);
 	if (!result){
 		pr_alert("TOTP %u did not match the expected value.", totp_dec);
 		fail();
 	}
 	else {
-		pr_alert("TOTP %u matches the expected value.", totp_dec);
-		pr_info("TOTP %u matches the expected value.", totp_dec);
+		// pr_alert("TOTP %u matches the expected value.", totp_dec);
+		// pr_info("TOTP %u matches the expected value.", totp_dec);
 	}
 }
 
@@ -712,6 +674,34 @@ static void totp_spdm_work_handler(struct work_struct *w) {
 	uint8_t totp_response[TOTP_HEX_SIZE + 1];
 	bool device_found = false;
 
+	// perf variables
+	struct perf_event_attr pe;
+	struct perf_event *event;
+	u64 time_running, time_enabled, counter;
+
+	// start perf event
+	memset(&pe, 0, sizeof(struct perf_event_attr));
+	pe.size = sizeof(struct perf_event_attr);
+	pe.disabled = 1;
+	pe.exclude_kernel = 0;
+	pe.exclude_hv = 1;
+	pe.read_format = PERF_FORMAT_GROUP |
+					// PERF_FORMAT_TOTAL_TIME_ENABLED |
+					PERF_FORMAT_TOTAL_TIME_RUNNING |
+					// PERF_FORMAT_ID;
+					0;
+	// counter will be time is ns
+	pe.type = PERF_TYPE_SOFTWARE;
+	pe.config = PERF_COUNT_SW_TASK_CLOCK;
+	// create event counter
+	event = perf_event_create_kernel_counter(&pe,
+											-1, // cpu is set to -1 because we dont wanna measure a specific CPU
+											current, // we want to measre the current task/thread
+											NULL, // overflow callback function, not sure whats the purpose, can be NULL
+											NULL // context for callback function
+											);
+	perf_event_enable(event);
+
 	// Start TOTP variables
 	totp_spdm_usb_struct->totp_checks = 0;
 	memset(totp_spdm_usb_struct->totp_key, 0, TOTP_KEY_SIZE);
@@ -720,7 +710,7 @@ static void totp_spdm_work_handler(struct work_struct *w) {
 	// For this case, a timeout with a set number of tries
 	for (tries = 0; tries < MAX_TRIES; tries++){
 		if (totp_spdm_usb_struct->endpoints_count != 0){
-			pr_info("SPDM device found on attempt %d\n", tries);
+			// pr_info("SPDM device found on attempt %d\n", tries);
 			device_found = true;
 			break;
 		}
@@ -745,8 +735,6 @@ static void totp_spdm_work_handler(struct work_struct *w) {
 		pr_alert("Error on spdm_init_connection: %llX.", totp_spdm_usb_struct->spdm_status);
 		err_free_spdm();
 		fail();
-	} else {
-		pr_info("SPDM Context initialized.");
 	}
 
 	// Initialize certificates and related variables
@@ -759,7 +747,6 @@ static void totp_spdm_work_handler(struct work_struct *w) {
 		err_free_spdm();
 		fail();
 	} else {
-		pr_info("do_authentication_via_spdm - done");
 	}
 
 	use_psk = FALSE;
@@ -779,10 +766,8 @@ static void totp_spdm_work_handler(struct work_struct *w) {
 		fail();
 	}
 
-	pr_info("session_id: %d", totp_spdm_usb_struct->session_id);
-
 	do {
-		pr_info("Generating TOTP key.");
+		// pr_info("Generating TOTP key.");
 		// To avoid checks in the first message exchange,
 		// set totp_key to 0 for now
 		memset(totp_spdm_usb_struct->totp_key, 0, TOTP_KEY_SIZE);
@@ -821,15 +806,25 @@ static void totp_spdm_work_handler(struct work_struct *w) {
 				totp_spdm_usb_struct->totp_key_size);
 
 		// Final check to see if the loop will be done again
-		pr_info("TOTP key size: %llu", totp_spdm_usb_struct->totp_key_size);
+		// pr_info("TOTP key size: %llu", totp_spdm_usb_struct->totp_key_size);
 	} while (totp_spdm_usb_struct->totp_key_size != TOTP_KEY_SIZE);
 
 	// End SPDM session
 
+	perf_event_disable(event);
+	// obs.: the event counter does not reset its counter value if enabled/disabled
+	//		so the previous counter value must saved to compute the difference
+	//		or just delete the counter and create a new one
+	counter = perf_event_read_value(event, &time_enabled, &time_running);
+	printk(KERN_INFO "counter: %llu\n", counter);
 
-	pr_info("Initializing periodic SPDM checks.");
+	// delete event counter
+	perf_event_release_kernel(event);
+
+	// pr_info("Initializing periodic SPDM checks.");
 	while(true){
 		receive_totp_code(totp_response, TOTP_HEX_SIZE);
+		
 		msleep(VERIFICATION_PERIOD_MS);
 	}	
 /*
@@ -881,11 +876,6 @@ static int usb_totp_spdm_probe (struct usb_interface *interface, const struct us
 
 	// We set this bariable to make sure at least one device has been found 
 	totp_spdm_usb_struct->endpoints_count = iface_desc->desc.bNumEndpoints;
-
-	print_usb_interface_descriptor(iface_desc->desc);
-	for (i = 0; i < totp_spdm_usb_struct->endpoints_count; i++) {
-		print_usb_endpoint_descriptor(iface_desc->endpoint[i].desc);
-	}
 
 	/* set up the endpoint information */
 	/* use only the first bulk-in and bulk-out endpoints */
@@ -945,13 +935,11 @@ static int __init usb_totp_spdm_init (void) {
 	// start the workqueue pointer, in case it is not set yet
 	if (!wq){
 		wq = create_singlethread_workqueue("totp_spdm");
-		printk(KERN_INFO "not wq\n");
 	}
 
 	// create totp_spdm_work workqueue
 	if (wq){
 		queue_work(wq, &totp_spdm_work);
-		printk(KERN_INFO "wq\n");
 	}
 	//register the USB device
 	return usb_register(&usb_totp_spdm_driver);
