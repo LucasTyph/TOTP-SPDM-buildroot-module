@@ -1,0 +1,3 @@
+if [ $1 = start ]; then
+	/etc/init.d/totp_aux.sh &	
+fi
