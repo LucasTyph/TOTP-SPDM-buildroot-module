@@ -1,3 +1,3 @@
-sleep 1m
-dmesg | grep counter >> /root/totplog.txt
+sleep 15s
+dmesg | grep counter >> /totplog.txt
 reboot

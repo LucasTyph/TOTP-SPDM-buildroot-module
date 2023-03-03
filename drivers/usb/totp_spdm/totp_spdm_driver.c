@@ -676,8 +676,8 @@ static void totp_spdm_work_handler(struct work_struct *w) {
 
 	// perf variables
 	struct perf_event_attr pe;
-	struct perf_event *event;
-	u64 time_running, time_enabled, counter;
+	struct perf_event *event_spdm_create_session, *event_totp_key_create, *event_totp_challenge;
+	u64 time_running, time_enabled, counter_spdm_create_session, counter_totp_key_create, counter_totp_challenge;
 
 	// start perf event
 	memset(&pe, 0, sizeof(struct perf_event_attr));
@@ -694,13 +694,13 @@ static void totp_spdm_work_handler(struct work_struct *w) {
 	pe.type = PERF_TYPE_SOFTWARE;
 	pe.config = PERF_COUNT_SW_TASK_CLOCK;
 	// create event counter
-	event = perf_event_create_kernel_counter(&pe,
+	event_spdm_create_session = perf_event_create_kernel_counter(&pe,
 											-1, // cpu is set to -1 because we dont wanna measure a specific CPU
 											current, // we want to measre the current task/thread
 											NULL, // overflow callback function, not sure whats the purpose, can be NULL
 											NULL // context for callback function
 											);
-	perf_event_enable(event);
+	perf_event_enable(event_spdm_create_session);
 
 	// Start TOTP variables
 	totp_spdm_usb_struct->totp_checks = 0;
@@ -766,6 +766,25 @@ static void totp_spdm_work_handler(struct work_struct *w) {
 		fail();
 	}
 
+	perf_event_disable(event_spdm_create_session);
+	// obs.: the event counter does not reset its counter value if enabled/disabled
+	//		so the previous counter value must saved to compute the difference
+	//		or just delete the counter and create a new one
+	counter_spdm_create_session = perf_event_read_value(event_spdm_create_session, &time_enabled, &time_running);
+	printk(KERN_INFO "SPDM session started. counter: %llu\n", counter_spdm_create_session);
+
+	// delete event counter
+	perf_event_release_kernel(event_spdm_create_session);
+
+	// TOTP key creation event
+	event_totp_key_create = perf_event_create_kernel_counter(&pe,
+											-1, // cpu is set to -1 because we dont wanna measure a specific CPU
+											current, // we want to measre the current task/thread
+											NULL, // overflow callback function, not sure whats the purpose, can be NULL
+											NULL // context for callback function
+											);
+	perf_event_enable(event_totp_key_create);
+
 	do {
 		// pr_info("Generating TOTP key.");
 		// To avoid checks in the first message exchange,
@@ -809,22 +828,32 @@ static void totp_spdm_work_handler(struct work_struct *w) {
 		// pr_info("TOTP key size: %llu", totp_spdm_usb_struct->totp_key_size);
 	} while (totp_spdm_usb_struct->totp_key_size != TOTP_KEY_SIZE);
 
-	// End SPDM session
-
-	perf_event_disable(event);
-	// obs.: the event counter does not reset its counter value if enabled/disabled
-	//		so the previous counter value must saved to compute the difference
-	//		or just delete the counter and create a new one
-	counter = perf_event_read_value(event, &time_enabled, &time_running);
-	printk(KERN_INFO "counter: %llu\n", counter);
+	perf_event_disable(event_totp_key_create);
+	counter_totp_key_create = perf_event_read_value(event_totp_key_create, &time_enabled, &time_running);
+	printk(KERN_INFO "TOTP key generated. counter: %llu\n", counter_totp_key_create);
 
 	// delete event counter
-	perf_event_release_kernel(event);
+	perf_event_release_kernel(event_totp_key_create);
+
+	// End SPDM session
 
 	// pr_info("Initializing periodic SPDM checks.");
 	while(true){
+		// TOTP challenge creation event
+		event_totp_challenge = perf_event_create_kernel_counter(&pe,
+												-1, // cpu is set to -1 because we dont wanna measure a specific CPU
+												current, // we want to measre the current task/thread
+												NULL, // overflow callback function, not sure whats the purpose, can be NULL
+												NULL // context for callback function
+												);
+		perf_event_enable(event_totp_challenge);
+
 		receive_totp_code(totp_response, TOTP_HEX_SIZE);
-		
+
+		perf_event_disable(event_totp_challenge);
+		counter_totp_challenge = perf_event_read_value(event_totp_challenge, &time_enabled, &time_running);
+		printk(KERN_INFO "TOTP verification done. counter: %llu\n", counter_totp_challenge);
+
 		msleep(VERIFICATION_PERIOD_MS);
 	}	
 /*
