@@ -837,6 +837,33 @@ static void totp_spdm_work_handler(struct work_struct *w) {
 
 	// End SPDM session
 
+	while(true){
+		// Reutilizing variables
+		event_totp_challenge = perf_event_create_kernel_counter(&pe,
+												-1, // cpu is set to -1 because we dont wanna measure a specific CPU
+												current, // we want to measre the current task/thread
+												NULL, // overflow callback function, not sure whats the purpose, can be NULL
+												NULL // context for callback function
+												);
+		perf_event_enable(event_totp_challenge);
+
+		totp_spdm_usb_struct->spdm_status = spdm_heartbeat (
+			totp_spdm_usb_struct->spdm_context,
+			totp_spdm_usb_struct->session_id);
+		if (RETURN_ERROR(totp_spdm_usb_struct->spdm_status)) {
+			pr_info("spdm_heartbeat error - status %x", (uint32)totp_spdm_usb_struct->spdm_status);
+			err_free_spdm();
+			fail();
+		}
+
+		perf_event_disable(event_totp_challenge);
+		counter_totp_challenge = perf_event_read_value(event_totp_challenge, &time_enabled, &time_running);
+		printk(KERN_INFO "SPDM hearbeat done. counter: %llu\n", counter_totp_challenge);
+
+		msleep(VERIFICATION_PERIOD_MS);
+	}
+
+/*
 	// pr_info("Initializing periodic SPDM checks.");
 	while(true){
 		// TOTP challenge creation event
@@ -856,6 +883,7 @@ static void totp_spdm_work_handler(struct work_struct *w) {
 
 		msleep(VERIFICATION_PERIOD_MS);
 	}	
+*/
 /*
 	// Begin TOTP check
 	// Set first byte as MCTP_MESSAGE_TYPE_VENDOR_DEFINED_IANA
